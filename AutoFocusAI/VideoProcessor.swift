@@ -18,7 +18,6 @@ final class VideoProcessor {
 
 	init() {}
 
-	nonisolated
 	func process() async {
 		let videoAsset = AVURLAsset(url: inputURL)
 
@@ -26,7 +25,7 @@ final class VideoProcessor {
 		let (naturalSize, preferredTransform) = try! await track.load(.naturalSize, .preferredTransform)
 		let size = CGSizeApplyAffineTransform(naturalSize, preferredTransform)
 		print("size", size)
-		await self.apply(size: size)
+		self.apply(size: size)
 
 		let shotTracker = ShotTracker(sourceSize: size)
 
@@ -63,7 +62,7 @@ final class VideoProcessor {
 							.translatedBy(x: -output.extent.origin.x, y: -output.extent.origin.y)
 					)
 
-				await self.apply(
+				self.apply(
 					source: image,
 					output: output,
 					state: state
