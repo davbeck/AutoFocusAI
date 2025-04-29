@@ -11,7 +11,7 @@ struct ShotState: Sendable {
 actor ShotTracker {
 	let sourceSize: CGSize
 
-	let targetOutput: CGSize = .init(width: 1080 / 2, height: 1920 / 2)
+	let targetOutput: CGSize = .init(width: 1080, height: 1920)
 
 	var currentBounds: CGRect
 
@@ -19,9 +19,9 @@ actor ShotTracker {
 
 	var currentTime: CMTime?
 
-	let mass: CGFloat = 0.05
+	let mass: CGFloat = 0.005
 
-	let damping: CGFloat = 0.25
+	let damping: CGFloat = 0.01
 
 	init(sourceSize: CGSize) {
 		self.sourceSize = sourceSize
@@ -49,22 +49,28 @@ actor ShotTracker {
 	}
 
 	func track(_ pose: HumanBodyPoseObservation, at compositionTime: CMTime) -> ShotState {
-		let joints = Array(pose.allJoints(in: .face).values) + Array(pose.allJoints(in: .torso).values)
-
-		let points = joints
-			.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
-
-		let boundingRect = CGRect.boundingRect(of: points)
-
 		let targetBounds = self.target(for: currentBounds)
 
-		if let currentTime, compositionTime > currentTime {
+		let faceJoints = Array(pose.allJoints(in: .face).values)
+		let torsoJoints = Array(pose.allJoints(in: .torso).values)
+		let joints = faceJoints + torsoJoints
+
+		var boundingRect = CGRect.boundingRect(
+			of: joints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
+		)
+		if boundingRect.size.width > targetBounds.size.width || boundingRect.size.height > targetBounds.size.height {
+			boundingRect = CGRect.boundingRect(
+				of: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
+			)
+		}
+
+		if let currentTime, compositionTime > currentTime, compositionTime.seconds - currentTime.seconds < 1 {
 			let forceRightX = max(boundingRect.maxX - targetBounds.maxX, 0)
 			let forceLeftX = min(boundingRect.minX - targetBounds.minX, 0)
 			let forceX = forceRightX + forceLeftX
 
-			let forceRightY = boundingRect.maxY - targetBounds.maxY
-			let forceLeftY = boundingRect.minY - targetBounds.minY
+			let forceRightY = max(boundingRect.maxY - targetBounds.maxY, 0)
+			let forceLeftY = min(boundingRect.minY - targetBounds.minY, 0)
 			let forceY = forceRightY + forceLeftY
 
 			let deltaTime = compositionTime.seconds - currentTime.seconds

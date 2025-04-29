@@ -28,8 +28,7 @@ struct ContentView: View {
 			.aspectRatio(CGSize(width: 1920, height: 1080), contentMode: .fit)
 			
 			MetalView(image: processor.currentOutput)
-				.aspectRatio(CGSize(width: 1920, height: 1080), contentMode: .fit)
-//				.aspectRatio(CGSize(width: 1080, height: 1920), contentMode: .fit)
+				.aspectRatio(CGSize(width: 1080, height: 1920), contentMode: .fit)
 			
 //			if let player {
 //				VideoPlayer(player: player)
