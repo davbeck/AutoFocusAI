@@ -24,6 +24,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		11890EBE2F8989E20073B04F /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		11890EBF2F898B010073B04F /* PRD.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = PRD.md; sourceTree = "<group>"; };
+		11890EC02F898BA90073B04F /* IMPLEMENTATION_PLAN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = IMPLEMENTATION_PLAN.md; sourceTree = "<group>"; };
 		11BB69012DBD790500135D74 /* AutoFocusAI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AutoFocusAI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		11BB690F2DBD790700135D74 /* AutoFocusAITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AutoFocusAITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		11BB69192DBD790700135D74 /* AutoFocusAIUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AutoFocusAIUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -88,6 +91,9 @@
 		11BB68F82DBD790500135D74 = {
 			isa = PBXGroup;
 			children = (
+				11890EBE2F8989E20073B04F /* README.md */,
+				11890EBF2F898B010073B04F /* PRD.md */,
+				11890EC02F898BA90073B04F /* IMPLEMENTATION_PLAN.md */,
 				11BB69032DBD790500135D74 /* AutoFocusAI */,
 				11BB69122DBD790700135D74 /* AutoFocusAITests */,
 				11BB691C2DBD790700135D74 /* AutoFocusAIUITests */,
