@@ -3,9 +3,9 @@ import Dispatch
 import Foundation
 
 @main
-struct AutoFocusAICLI: ParsableCommand {
+struct AutoFocusAICLI: AsyncParsableCommand {
 	static let configuration = CommandConfiguration(
-		abstract: "Command-line entry point for AutoFocusAI analysis and export experiments."
+		abstract: "Command-line entry point for AutoFocusAI analysis and export experiments.",
 	)
 
 	@Argument(help: "Path to the source video file.")
@@ -14,26 +14,7 @@ struct AutoFocusAICLI: ParsableCommand {
 	@Argument(help: "Path where the cropped output video should be written.")
 	var output: String
 
-	mutating func run() throws {
-		var result: Result<Void, Error>!
-		let semaphore = DispatchSemaphore(value: 0)
-		let command = self
-
-		Task {
-			do {
-				try await command.runAsync()
-				result = .success(())
-			} catch {
-				result = .failure(error)
-			}
-			semaphore.signal()
-		}
-
-		semaphore.wait()
-		try result.get()
-	}
-
-	private func runAsync() async throws {
+	mutating func run() async throws {
 		let inputURL = URL(fileURLWithPath: (input as NSString).expandingTildeInPath).standardizedFileURL
 		let outputURL = URL(fileURLWithPath: (output as NSString).expandingTildeInPath).standardizedFileURL
 
@@ -67,7 +48,7 @@ struct AutoFocusAICLI: ParsableCommand {
 			.deletingLastPathComponent()
 		let helperSource = Self.helperSource(
 			inputPath: inputPath,
-			outputPath: outputPath
+			outputPath: outputPath,
 		)
 
 		let process = Process()
