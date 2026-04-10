@@ -15,9 +15,11 @@ public struct ShotState: Sendable {
 }
 
 public actor ShotTracker {
+	public static let defaultAspectRatio = CGSize(width: 9, height: 16)
+
 	public let sourceSize: CGSize
 
-	public let targetOutput: CGSize = .init(width: 1080, height: 1920)
+	public let targetOutput: CGSize
 
 	public var currentBounds: CGRect
 
@@ -29,8 +31,9 @@ public actor ShotTracker {
 
 	public let damping: CGFloat = 0.01
 
-	public init(sourceSize: CGSize) {
+	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
 		self.sourceSize = sourceSize
+		self.targetOutput = Self.cropSize(for: sourceSize, aspectRatio: aspectRatio)
 
 		self.currentBounds = CGRect(
 			origin: .init(
@@ -39,6 +42,28 @@ public actor ShotTracker {
 			),
 			size: targetOutput
 		)
+	}
+
+	public static func cropSize(for sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) -> CGSize {
+		guard
+			sourceSize.width > 0,
+			sourceSize.height > 0,
+			aspectRatio.width > 0,
+			aspectRatio.height > 0
+		else {
+			return .zero
+		}
+
+		let targetAspect = aspectRatio.width / aspectRatio.height
+		let sourceAspect = sourceSize.width / sourceSize.height
+
+		if sourceAspect > targetAspect {
+			let height = sourceSize.height
+			return CGSize(width: height * targetAspect, height: height)
+		} else {
+			let width = sourceSize.width
+			return CGSize(width: width, height: width / targetAspect)
+		}
 	}
 
 	private func target(for bounds: CGRect) -> CGRect {
@@ -54,7 +79,16 @@ public actor ShotTracker {
 		)
 	}
 
-	public func track(_ pose: HumanBodyPoseObservation, at compositionTime: CMTime) -> ShotState {
+	public func track(_ pose: HumanBodyPoseObservation?, at compositionTime: CMTime) -> ShotState {
+		guard let pose else {
+			self.currentTime = compositionTime
+			return ShotState(
+				bounds: currentBounds,
+				target: self.target(for: currentBounds),
+				pose: nil
+			)
+		}
+
 		let targetBounds = self.target(for: currentBounds)
 
 		let faceJoints = Array(pose.allJoints(in: .face).values)
@@ -99,6 +133,12 @@ public actor ShotTracker {
 		}
 		if currentBounds.origin.y < 0 {
 			currentBounds.origin.y = 0
+		}
+		if currentBounds.maxX > sourceSize.width {
+			currentBounds.origin.x = sourceSize.width - currentBounds.width
+		}
+		if currentBounds.maxY > sourceSize.height {
+			currentBounds.origin.y = sourceSize.height - currentBounds.height
 		}
 
 		self.currentTime = compositionTime

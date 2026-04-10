@@ -1,5 +1,5 @@
 import ArgumentParser
-import AutoFocusCore
+import Dispatch
 import Foundation
 
 @main
@@ -15,11 +15,30 @@ struct AutoFocusAICLI: ParsableCommand {
 	var output: String
 
 	mutating func run() throws {
-		let inputURL = URL(fileURLWithPath: (input as NSString).expandingTildeInPath)
-		let outputURL = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
+		var result: Result<Void, Error>!
+		let semaphore = DispatchSemaphore(value: 0)
+		let command = self
 
-		let inputPath = inputURL.standardizedFileURL.path
-		let outputPath = outputURL.standardizedFileURL.path
+		Task {
+			do {
+				try await command.runAsync()
+				result = .success(())
+			} catch {
+				result = .failure(error)
+			}
+			semaphore.signal()
+		}
+
+		semaphore.wait()
+		try result.get()
+	}
+
+	private func runAsync() async throws {
+		let inputURL = URL(fileURLWithPath: (input as NSString).expandingTildeInPath).standardizedFileURL
+		let outputURL = URL(fileURLWithPath: (output as NSString).expandingTildeInPath).standardizedFileURL
+
+		let inputPath = inputURL.path
+		let outputPath = outputURL.path
 
 		guard FileManager.default.fileExists(atPath: inputPath) else {
 			throw ValidationError("Input video does not exist: \(inputPath)")
@@ -39,12 +58,53 @@ struct AutoFocusAICLI: ParsableCommand {
 			throw ValidationError("Input and output paths must be different.")
 		}
 
-		throw CleanExit.message(
-			"""
-			Input: \(inputPath)
-			Output: \(outputPath)
-			Export is not implemented yet.
-			"""
+		print("Input: \(inputPath)")
+		print("Output: \(outputPath)")
+		print("Analyzing and exporting...")
+
+		let executableDirectory = URL(fileURLWithPath: CommandLine.arguments[0])
+			.standardizedFileURL
+			.deletingLastPathComponent()
+		let helperSource = Self.helperSource(
+			inputPath: inputPath,
+			outputPath: outputPath
 		)
+
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/swift")
+		process.arguments = [
+			"-module-cache-path", "/tmp/AutoFocusAICLI-module-cache",
+			"-I", executableDirectory.path,
+			"-F", executableDirectory.path,
+			"-framework", "AutoFocusCore",
+			"-e", helperSource,
+		]
+		process.environment = ProcessInfo.processInfo.environment
+		process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+		process.standardOutput = FileHandle.standardOutput
+		process.standardError = FileHandle.standardError
+
+		do {
+			try process.run()
+			process.waitUntilExit()
+		} catch {
+			throw ValidationError("Failed to launch Swift helper: \(error.localizedDescription)")
+		}
+
+		guard process.terminationStatus == 0 else {
+			throw ExitCode(process.terminationStatus)
+		}
+	}
+
+	private static func helperSource(inputPath: String, outputPath: String) -> String {
+		#"import AVFoundation; import AutoFocusCore; import Foundation; let inputURL = URL(fileURLWithPath: "__INPUT_PATH__"); let outputURL = URL(fileURLWithPath: "__OUTPUT_PATH__"); let asset = AVURLAsset(url: inputURL); let reframer = VideoReframer(); let analysis = try await reframer.analyze(asset: asset); print("Analyzed \(analysis.shotStates.count) frames."); print("Exporting..."); try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL); print("Export complete.")"#
+			.replacingOccurrences(of: "__INPUT_PATH__", with: escapedSwiftStringLiteral(inputPath))
+			.replacingOccurrences(of: "__OUTPUT_PATH__", with: escapedSwiftStringLiteral(outputPath))
+	}
+
+	private static func escapedSwiftStringLiteral(_ string: String) -> String {
+		string
+			.replacingOccurrences(of: "\\", with: "\\\\")
+			.replacingOccurrences(of: "\"", with: "\\\"")
 	}
 }

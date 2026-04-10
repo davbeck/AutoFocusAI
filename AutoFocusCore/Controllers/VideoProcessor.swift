@@ -1,56 +1,67 @@
 import AVFoundation
-import CoreImage
 import Foundation
 import Vision
+
+public struct VideoProcessingConfiguration: Sendable {
+	public var maximumFramesPerSecond: Double
+
+	public init(maximumFramesPerSecond: Double = 10) {
+		self.maximumFramesPerSecond = maximumFramesPerSecond
+	}
+}
 
 public actor VideoProcessor {
 	public enum Error: Swift.Error {
 		case noVideoTrackFound
-		case couldNotAddTrackOutput
 	}
 
 	public let asset: AVAsset
+	public let configuration: VideoProcessingConfiguration
 
-	public init(asset: AVAsset) {
+	public init(asset: AVAsset, configuration: VideoProcessingConfiguration = .init()) {
 		self.asset = asset
+		self.configuration = configuration
 	}
 
 	public func process() async throws -> [FrameData<[HumanBodyPoseObservation]>] {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Error.noVideoTrackFound }
+		let duration = try await asset.load(.duration)
+		let nominalFrameRate = try await track.load(.nominalFrameRate)
 
-		let assetReader = try AVAssetReader(asset: asset)
+		let generator = AVAssetImageGenerator(asset: asset)
+		generator.appliesPreferredTrackTransform = true
+		generator.requestedTimeToleranceBefore = .zero
+		generator.requestedTimeToleranceAfter = .zero
 
-		let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [
-			kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-		])
-		trackOutput.alwaysCopiesSampleData = false
-
-		guard assetReader.canAdd(trackOutput) else { throw Error.couldNotAddTrackOutput }
-		assetReader.add(trackOutput)
-
-		assetReader.startReading()
+		let sampleInterval = Self.sampleInterval(
+			forNominalFrameRate: nominalFrameRate,
+			maximumFramesPerSecond: configuration.maximumFramesPerSecond
+		)
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
+		var requestedTime = CMTime.zero
 
-		while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
-			let presentationTime = sampleBuffer.presentationTimeStamp
+		while requestedTime < duration {
+			var actualTime = CMTime.zero
+			let image = try generator.copyCGImage(at: requestedTime, actualTime: &actualTime)
 
-			guard let imageBuffer = sampleBuffer.imageBuffer else { continue }
-			let image = CIImage(cvImageBuffer: imageBuffer)
+			let request = VNDetectHumanBodyPoseRequest()
+			let handler = VNImageRequestHandler(cgImage: image)
+			try handler.perform([request])
 
-			let visionRequestHandler = ImageRequestHandler(image)
+			let poses = (request.results ?? []).map(HumanBodyPoseObservation.init)
+			frames.append(FrameData(presentationTime: actualTime, value: poses))
 
-			let bodyPostRequest = DetectHumanBodyPoseRequest()
-			let poses = try await visionRequestHandler.perform(bodyPostRequest)
-
-			frames.append(FrameData(presentationTime: presentationTime, value: poses))
-		}
-
-		if let error = assetReader.error {
-			throw error
+			requestedTime = requestedTime + sampleInterval
 		}
 
 		return frames
+	}
+
+	public static func sampleInterval(forNominalFrameRate nominalFrameRate: Float, maximumFramesPerSecond: Double) -> CMTime {
+		let clampedMaximum = max(maximumFramesPerSecond, 1)
+		let frameRate = nominalFrameRate > 0 ? min(Double(nominalFrameRate), clampedMaximum) : clampedMaximum
+		return CMTime(seconds: 1 / frameRate, preferredTimescale: 600)
 	}
 }
 

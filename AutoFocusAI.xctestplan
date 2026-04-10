@@ -1,0 +1,39 @@
+{
+  "configurations" : [
+    {
+      "id" : "A424C590-64B3-4067-A383-F49CC3E9D5E4",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:AutoFocusAI.xcodeproj",
+      "identifier" : "11BB69002DBD790500135D74",
+      "name" : "AutoFocusAI"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:AutoFocusAI.xcodeproj",
+        "identifier" : "11BB690E2DBD790700135D74",
+        "name" : "AutoFocusAITests"
+      }
+    },
+    {
+      "enabled" : false,
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:AutoFocusAI.xcodeproj",
+        "identifier" : "11BB69182DBD790700135D74",
+        "name" : "AutoFocusAIUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

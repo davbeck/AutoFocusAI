@@ -41,6 +41,19 @@ public extension RandomAccessCollection {
 
 		return .insert(at: low)
 	}
+
+	func value<SearchValue: Comparable>(
+		atOrBefore query: SearchValue,
+		transform: (Element) -> SearchValue
+	) -> Element? {
+		switch binarySearch(for: query, transform: transform) {
+		case .found(index: _, value: let value):
+			return value
+		case .insert(at: let index):
+			guard index != startIndex else { return nil }
+			return self[self.index(before: index)]
+		}
+	}
 }
 
 public struct Frames<Element> {
