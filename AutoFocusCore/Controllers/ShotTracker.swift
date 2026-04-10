@@ -1,29 +1,35 @@
 import Foundation
 import Vision
 
-struct ShotState: Sendable {
-	var bounds: CGRect
-	var target: CGRect
+public struct ShotState: Sendable {
+	public var bounds: CGRect
+	public var target: CGRect
 
-	var pose: HumanBodyPoseObservation?
+	public var pose: HumanBodyPoseObservation?
+
+	public init(bounds: CGRect, target: CGRect, pose: HumanBodyPoseObservation?) {
+		self.bounds = bounds
+		self.target = target
+		self.pose = pose
+	}
 }
 
-actor ShotTracker {
-	let sourceSize: CGSize
+public actor ShotTracker {
+	public let sourceSize: CGSize
 
-	let targetOutput: CGSize = .init(width: 1080, height: 1920)
+	public let targetOutput: CGSize = .init(width: 1080, height: 1920)
 
-	var currentBounds: CGRect
+	public var currentBounds: CGRect
 
-	var currentSpeed: CGPoint = .zero
+	public var currentSpeed: CGPoint = .zero
 
-	var currentTime: CMTime?
+	public var currentTime: CMTime?
 
-	let mass: CGFloat = 0.005
+	public let mass: CGFloat = 0.005
 
-	let damping: CGFloat = 0.01
+	public let damping: CGFloat = 0.01
 
-	init(sourceSize: CGSize) {
+	public init(sourceSize: CGSize) {
 		self.sourceSize = sourceSize
 
 		self.currentBounds = CGRect(
@@ -48,7 +54,7 @@ actor ShotTracker {
 		)
 	}
 
-	func track(_ pose: HumanBodyPoseObservation, at compositionTime: CMTime) -> ShotState {
+	public func track(_ pose: HumanBodyPoseObservation, at compositionTime: CMTime) -> ShotState {
 		let targetBounds = self.target(for: currentBounds)
 
 		let faceJoints = Array(pose.allJoints(in: .face).values)
@@ -83,12 +89,6 @@ actor ShotTracker {
 
 			currentSpeed.x *= damping
 			currentSpeed.y *= damping
-
-			// this is working fairly well but...
-
-			// what if it was more like a rubber band pulling to the center
-			// have a minimum distance before the camera starts moving, but once it does
-			// keep pulling it towards the center of the current position
 		} else {
 			currentBounds.origin.x -= targetBounds.midX - boundingRect.midX
 			currentBounds.origin.y -= targetBounds.midY - boundingRect.midY

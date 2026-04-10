@@ -1,8 +1,8 @@
-enum BinarySearchResult<Index, Element> {
+public enum BinarySearchResult<Index, Element> {
 	case found(index: Index, value: Element)
 	case insert(at: Index)
 
-	var value: Element? {
+	public var value: Element? {
 		switch self {
 		case .found(index: _, value: let value):
 			value
@@ -12,7 +12,7 @@ enum BinarySearchResult<Index, Element> {
 	}
 }
 
-extension RandomAccessCollection {
+public extension RandomAccessCollection {
 	// https://stackoverflow.com/questions/31904396/swift-binary-search-for-standard-array
 
 	/// Finds such index N that predicate is true for all elements up to
@@ -43,34 +43,36 @@ extension RandomAccessCollection {
 	}
 }
 
-struct Frames<Element> {
+public struct Frames<Element> {
 	private var data: [FrameData<Element>] = []
+
+	public init() {}
 }
 
 extension Frames: Collection {
-	func index(after i: Index) -> Index {
+	public func index(after i: Index) -> Index {
 		.init(rawValue: data.index(after: i.rawValue))
 	}
 
-	subscript(position: Index) -> Element {
+	public subscript(position: Index) -> Element {
 		_read {
 			yield data[position.rawValue].value
 		}
 	}
 
-	struct Index: Comparable {
+	public struct Index: Comparable {
 		fileprivate var rawValue: Int
 
-		static func < (lhs: Frames<Element>.Index, rhs: Frames<Element>.Index) -> Bool {
+		public static func < (lhs: Frames<Element>.Index, rhs: Frames<Element>.Index) -> Bool {
 			lhs.rawValue < rhs.rawValue
 		}
 	}
 
-	var startIndex: Index {
+	public var startIndex: Index {
 		.init(rawValue: data.startIndex)
 	}
 
-	var endIndex: Index {
+	public var endIndex: Index {
 		.init(rawValue: data.endIndex)
 	}
 }

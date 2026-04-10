@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import AutoFocusCore
 import Foundation
 import Observation
 import SwiftUI
