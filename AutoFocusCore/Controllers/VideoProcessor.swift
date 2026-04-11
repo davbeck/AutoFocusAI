@@ -44,7 +44,8 @@ public actor VideoProcessor {
 		while requestedTime < duration {
 			let (image, actualTime) = try await generator.image(at: requestedTime)
 
-			let request = DetectHumanBodyPoseRequest()
+			var request = DetectHumanBodyPoseRequest()
+			request.detectsHands = false
 			let handler = ImageRequestHandler(image)
 			let poses = try await handler.perform(request)
 
