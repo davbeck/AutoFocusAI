@@ -4,12 +4,14 @@ import Vision
 public struct ShotState: Sendable {
 	public var bounds: CGRect
 	public var target: CGRect
+	public var subjectCenter: CGPoint?
 
 	public var pose: HumanBodyPoseObservation?
 
-	public init(bounds: CGRect, target: CGRect, pose: HumanBodyPoseObservation?) {
+	public init(bounds: CGRect, target: CGRect, subjectCenter: CGPoint?, pose: HumanBodyPoseObservation?) {
 		self.bounds = bounds
 		self.target = target
+		self.subjectCenter = subjectCenter
 		self.pose = pose
 	}
 }
@@ -38,9 +40,9 @@ public actor ShotTracker {
 		self.currentBounds = CGRect(
 			origin: .init(
 				x: sourceSize.width / 2 - targetOutput.width / 2,
-				y: sourceSize.height / 2 - targetOutput.height / 2
+				y: sourceSize.height / 2 - targetOutput.height / 2,
 			),
-			size: targetOutput
+			size: targetOutput,
 		)
 	}
 
@@ -74,8 +76,8 @@ public actor ShotTracker {
 			),
 			size: .init(
 				width: bounds.width * 0.7,
-				height: bounds.height * 0.5
-			)
+				height: bounds.height * 0.5,
+			),
 		)
 	}
 
@@ -85,7 +87,8 @@ public actor ShotTracker {
 			return ShotState(
 				bounds: currentBounds,
 				target: self.target(for: currentBounds),
-				pose: nil
+				subjectCenter: nil,
+				pose: nil,
 			)
 		}
 
@@ -96,11 +99,11 @@ public actor ShotTracker {
 		let joints = faceJoints + torsoJoints
 
 		var boundingRect = CGRect.boundingRect(
-			of: joints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
+			of: joints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
 		)
 		if boundingRect.size.width > targetBounds.size.width || boundingRect.size.height > targetBounds.size.height {
 			boundingRect = CGRect.boundingRect(
-				of: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
+				of: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
 			)
 		}
 
@@ -146,7 +149,8 @@ public actor ShotTracker {
 		return ShotState(
 			bounds: currentBounds,
 			target: self.target(for: currentBounds),
-			pose: pose
+			subjectCenter: CGPoint(x: boundingRect.midX, y: boundingRect.midY),
+			pose: pose,
 		)
 	}
 }

@@ -35,21 +35,19 @@ public actor VideoProcessor {
 
 		let sampleInterval = Self.sampleInterval(
 			forNominalFrameRate: nominalFrameRate,
-			maximumFramesPerSecond: configuration.maximumFramesPerSecond
+			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
 		)
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
 		var requestedTime = CMTime.zero
 
 		while requestedTime < duration {
-			var actualTime = CMTime.zero
-			let image = try generator.copyCGImage(at: requestedTime, actualTime: &actualTime)
+			let (image, actualTime) = try await generator.image(at: requestedTime)
 
-			let request = VNDetectHumanBodyPoseRequest()
-			let handler = VNImageRequestHandler(cgImage: image)
-			try handler.perform([request])
+			let request = DetectHumanBodyPoseRequest()
+			let handler = ImageRequestHandler(image)
+			let poses = try await handler.perform(request)
 
-			let poses = (request.results ?? []).map(HumanBodyPoseObservation.init)
 			frames.append(FrameData(presentationTime: actualTime, value: poses))
 
 			requestedTime = requestedTime + sampleInterval
