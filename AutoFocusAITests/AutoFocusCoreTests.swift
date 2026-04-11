@@ -45,4 +45,39 @@ struct AutoFocusCoreTests {
 
 		#expect(interval.seconds == 0.1)
 	}
+
+	@Test
+	func reframingAnalysisInterpolatesBoundsBetweenTrackedFrames() {
+		let analysis = ReframingAnalysis(
+			sourceSize: CGSize(width: 1920, height: 1080),
+			renderSize: CGSize(width: 1080, height: 1920),
+			shotStates: [
+				FrameData(
+					presentationTime: CMTime(seconds: 1, preferredTimescale: 600),
+					value: ShotState(
+						bounds: CGRect(x: 100, y: 200, width: 600, height: 1080),
+						target: .zero,
+						subjectCenter: nil,
+						pose: nil
+					)
+				),
+				FrameData(
+					presentationTime: CMTime(seconds: 2, preferredTimescale: 600),
+					value: ShotState(
+						bounds: CGRect(x: 220, y: 260, width: 600, height: 1080),
+						target: .zero,
+						subjectCenter: nil,
+						pose: nil
+					)
+				),
+			]
+		)
+
+		let bounds = analysis.interpolatedBounds(at: CMTime(seconds: 1.25, preferredTimescale: 600))
+
+		#expect(bounds?.origin.x == 130)
+		#expect(bounds?.origin.y == 215)
+		#expect(bounds?.width == 600)
+		#expect(bounds?.height == 1080)
+	}
 }

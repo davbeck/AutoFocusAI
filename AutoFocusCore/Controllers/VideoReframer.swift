@@ -26,6 +26,29 @@ public struct ReframingAnalysis: Sendable {
 		self.renderSize = renderSize
 		self.shotStates = shotStates
 	}
+
+	func interpolatedBounds(at compositionTime: CMTime) -> CGRect? {
+		switch shotStates.binarySearch(for: compositionTime, transform: { $0.presentationTime }) {
+		case .found(index: _, value: let frame):
+			return frame.value.bounds
+		case .insert(at: let index):
+			guard !shotStates.isEmpty else { return nil }
+			guard index != shotStates.startIndex else { return shotStates.first?.value.bounds }
+			guard index != shotStates.endIndex else { return shotStates.last?.value.bounds }
+
+			let previousFrame = shotStates[shotStates.index(before: index)]
+			let nextFrame = shotStates[index]
+			let duration = nextFrame.presentationTime.seconds - previousFrame.presentationTime.seconds
+
+			guard duration > 0 else { return previousFrame.value.bounds }
+
+			let progress = max(
+				0,
+				min(1, (compositionTime.seconds - previousFrame.presentationTime.seconds) / duration)
+			)
+			return previousFrame.value.bounds.interpolated(to: nextFrame.value.bounds, progress: progress)
+		}
+	}
 }
 
 public enum VideoReframerError: Swift.Error {
@@ -113,17 +136,14 @@ public actor VideoReframer {
 		}
 
 		let composition = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-			let state = analysis.shotStates.value(atOrBefore: request.compositionTime, transform: { $0.presentationTime })?.value
-				?? analysis.shotStates.last?.value
-
-			guard let state else {
+			guard let cropRect = analysis.interpolatedBounds(at: request.compositionTime) else {
 				request.finish(with: request.sourceImage, context: nil)
 				return
 			}
 
 			let outputImage = Self.reframedImage(
 				request.sourceImage,
-				cropRect: state.bounds.integral,
+				cropRect: cropRect,
 				renderSize: analysis.renderSize
 			)
 			request.finish(with: outputImage, context: nil)
@@ -171,5 +191,18 @@ public actor VideoReframer {
 		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
 		let rect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
 		return CGSize(width: abs(rect.width), height: abs(rect.height))
+	}
+}
+
+private extension CGRect {
+	func interpolated(to other: CGRect, progress: Double) -> CGRect {
+		let progress = CGFloat(progress)
+
+		return CGRect(
+			x: origin.x + (other.origin.x - origin.x) * progress,
+			y: origin.y + (other.origin.y - origin.y) * progress,
+			width: size.width + (other.size.width - size.width) * progress,
+			height: size.height + (other.size.height - size.height) * progress
+		)
 	}
 }
