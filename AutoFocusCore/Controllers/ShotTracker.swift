@@ -34,6 +34,8 @@ public actor ShotTracker {
 
 	public let dampingCoefficient: CGFloat = 6
 
+	public let horizontalDeadZoneHalfWidthFactor: CGFloat = 0.1
+
 	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
 		self.sourceSize = sourceSize
 		self.targetOutput = Self.cropSize(for: sourceSize, aspectRatio: aspectRatio)
@@ -83,8 +85,15 @@ public actor ShotTracker {
 	}
 
 	private func desiredOrigin(for subjectCenter: CGPoint) -> CGPoint {
-		CGPoint(
-			x: subjectCenter.x - targetOutput.width * Self.targetAnchor.x,
+		let currentTargetX = currentBounds.minX + targetOutput.width * Self.targetAnchor.x
+		let deadZoneHalfWidth = targetOutput.width * horizontalDeadZoneHalfWidthFactor
+		let horizontalOverflow = Self.deadZoneOverflow(
+			offset: subjectCenter.x - currentTargetX,
+			halfWidth: deadZoneHalfWidth
+		)
+
+		return CGPoint(
+			x: currentBounds.origin.x + horizontalOverflow,
 			y: subjectCenter.y - targetOutput.height * Self.targetAnchor.y
 		)
 	}
@@ -195,6 +204,18 @@ public actor ShotTracker {
 		position.y += velocity.y * deltaTime
 
 		return (position, velocity)
+	}
+
+	static func deadZoneOverflow(offset: CGFloat, halfWidth: CGFloat) -> CGFloat {
+		guard abs(offset) > halfWidth else {
+			return 0
+		}
+
+		if offset > 0 {
+			return offset - halfWidth
+		} else {
+			return offset + halfWidth
+		}
 	}
 }
 

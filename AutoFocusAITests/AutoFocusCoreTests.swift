@@ -91,6 +91,13 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func shotTrackerDeadZoneIgnoresSmallHorizontalOffsets() {
+		#expect(ShotTracker.deadZoneOverflow(offset: 40, halfWidth: 60) == 0)
+		#expect(ShotTracker.deadZoneOverflow(offset: 120, halfWidth: 60) == 60)
+		#expect(ShotTracker.deadZoneOverflow(offset: -120, halfWidth: 60) == -60)
+	}
+
+	@Test
 	func reframingAnalysisInterpolatesBoundsBetweenTrackedFrames() {
 		let analysis = ReframingAnalysis(
 			sourceSize: CGSize(width: 1920, height: 1080),
