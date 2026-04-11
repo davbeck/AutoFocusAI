@@ -47,6 +47,50 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func shotTrackerSpringStepKeepsMovingTowardTarget() {
+		let dampingCoefficient: CGFloat = 6
+
+		let firstStep = ShotTracker.springStep(
+			position: .zero,
+			velocity: .zero,
+			target: CGPoint(x: 120, y: 0),
+			deltaTime: 0.1,
+			springStiffness: 18,
+			dampingCoefficient: dampingCoefficient
+		)
+		let secondStep = ShotTracker.springStep(
+			position: firstStep.position,
+			velocity: firstStep.velocity,
+			target: CGPoint(x: 120, y: 0),
+			deltaTime: 0.1,
+			springStiffness: 18,
+			dampingCoefficient: dampingCoefficient
+		)
+
+		#expect(firstStep.position.x > 0)
+		#expect(secondStep.position.x > firstStep.position.x)
+		#expect(secondStep.velocity.x > 0)
+	}
+
+	@Test
+	func shotTrackerSpringStepCoastsWhenTargetDisappears() {
+		let dampingCoefficient: CGFloat = 6
+
+		let step = ShotTracker.springStep(
+			position: .zero,
+			velocity: CGPoint(x: 100, y: 0),
+			target: nil,
+			deltaTime: 0.1,
+			springStiffness: 18,
+			dampingCoefficient: dampingCoefficient
+		)
+
+		#expect(step.position.x > 0)
+		#expect(step.velocity.x > 0)
+		#expect(step.velocity.x < 100)
+	}
+
+	@Test
 	func reframingAnalysisInterpolatesBoundsBetweenTrackedFrames() {
 		let analysis = ReframingAnalysis(
 			sourceSize: CGSize(width: 1920, height: 1080),

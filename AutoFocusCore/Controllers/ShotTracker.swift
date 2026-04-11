@@ -18,6 +18,7 @@ public struct ShotState: Sendable {
 
 public actor ShotTracker {
 	public static let defaultAspectRatio = CGSize(width: 9, height: 16)
+	static let targetAnchor = CGPoint(x: 0.5, y: 0.65)
 
 	public let sourceSize: CGSize
 
@@ -29,9 +30,9 @@ public actor ShotTracker {
 
 	public var currentTime: CMTime?
 
-	public let mass: CGFloat = 0.005
+	public let springStiffness: CGFloat = 18
 
-	public let damping: CGFloat = 0.01
+	public let dampingCoefficient: CGFloat = 6
 
 	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
 		self.sourceSize = sourceSize
@@ -81,8 +82,35 @@ public actor ShotTracker {
 		)
 	}
 
+	private func desiredOrigin(for subjectCenter: CGPoint) -> CGPoint {
+		CGPoint(
+			x: subjectCenter.x - targetOutput.width * Self.targetAnchor.x,
+			y: subjectCenter.y - targetOutput.height * Self.targetAnchor.y
+		)
+	}
+
+	private func clampedOrigin(_ origin: CGPoint) -> CGPoint {
+		CGPoint(
+			x: min(max(origin.x, 0), sourceSize.width - targetOutput.width),
+			y: min(max(origin.y, 0), sourceSize.height - targetOutput.height)
+		)
+	}
+
 	public func track(_ pose: HumanBodyPoseObservation?, at compositionTime: CMTime) -> ShotState {
 		guard let pose else {
+			if let currentTime, compositionTime > currentTime, compositionTime.seconds - currentTime.seconds < 1 {
+				let step = Self.springStep(
+					position: currentBounds.origin,
+					velocity: currentSpeed,
+					target: nil,
+					deltaTime: compositionTime.seconds - currentTime.seconds,
+					springStiffness: springStiffness,
+					dampingCoefficient: dampingCoefficient
+				)
+				currentBounds.origin = clampedOrigin(step.position)
+				currentSpeed = step.velocity
+			}
+
 			self.currentTime = compositionTime
 			return ShotState(
 				bounds: currentBounds,
@@ -92,11 +120,10 @@ public actor ShotTracker {
 			)
 		}
 
-		let targetBounds = self.target(for: currentBounds)
-
 		let faceJoints = Array(pose.allJoints(in: .face).values)
 		let torsoJoints = Array(pose.allJoints(in: .torso).values)
 		let joints = faceJoints + torsoJoints
+		let targetBounds = self.target(for: currentBounds)
 
 		var boundingRect = CGRect.boundingRect(
 			of: joints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
@@ -107,41 +134,23 @@ public actor ShotTracker {
 			)
 		}
 
+		let subjectCenter = CGPoint(x: boundingRect.midX, y: boundingRect.midY)
+		let desiredOrigin = clampedOrigin(self.desiredOrigin(for: subjectCenter))
+
 		if let currentTime, compositionTime > currentTime, compositionTime.seconds - currentTime.seconds < 1 {
-			let forceRightX = max(boundingRect.maxX - targetBounds.maxX, 0)
-			let forceLeftX = min(boundingRect.minX - targetBounds.minX, 0)
-			let forceX = forceRightX + forceLeftX
-
-			let forceRightY = max(boundingRect.maxY - targetBounds.maxY, 0)
-			let forceLeftY = min(boundingRect.minY - targetBounds.minY, 0)
-			let forceY = forceRightY + forceLeftY
-
-			let deltaTime = compositionTime.seconds - currentTime.seconds
-			let damping = pow(self.damping, deltaTime)
-			currentSpeed.x += (forceX / mass) * deltaTime
-			currentSpeed.y += (forceY / mass) * deltaTime
-
-			currentBounds.origin.x += currentSpeed.x * deltaTime
-			currentBounds.origin.y += currentSpeed.y * deltaTime
-
-			currentSpeed.x *= damping
-			currentSpeed.y *= damping
+			let step = Self.springStep(
+				position: currentBounds.origin,
+				velocity: currentSpeed,
+				target: desiredOrigin,
+				deltaTime: compositionTime.seconds - currentTime.seconds,
+				springStiffness: springStiffness,
+				dampingCoefficient: dampingCoefficient
+			)
+			currentBounds.origin = clampedOrigin(step.position)
+			currentSpeed = step.velocity
 		} else {
-			currentBounds.origin.x -= targetBounds.midX - boundingRect.midX
-			currentBounds.origin.y -= targetBounds.midY - boundingRect.midY
-		}
-
-		if currentBounds.origin.x < 0 {
-			currentBounds.origin.x = 0
-		}
-		if currentBounds.origin.y < 0 {
-			currentBounds.origin.y = 0
-		}
-		if currentBounds.maxX > sourceSize.width {
-			currentBounds.origin.x = sourceSize.width - currentBounds.width
-		}
-		if currentBounds.maxY > sourceSize.height {
-			currentBounds.origin.y = sourceSize.height - currentBounds.height
+			currentBounds.origin = desiredOrigin
+			currentSpeed = .zero
 		}
 
 		self.currentTime = compositionTime
@@ -149,9 +158,43 @@ public actor ShotTracker {
 		return ShotState(
 			bounds: currentBounds,
 			target: self.target(for: currentBounds),
-			subjectCenter: CGPoint(x: boundingRect.midX, y: boundingRect.midY),
+			subjectCenter: subjectCenter,
 			pose: pose,
 		)
+	}
+
+	static func springStep(
+		position: CGPoint,
+		velocity: CGPoint,
+		target: CGPoint?,
+		deltaTime: Double,
+		springStiffness: CGFloat,
+		dampingCoefficient: CGFloat
+	) -> (position: CGPoint, velocity: CGPoint) {
+		guard deltaTime > 0 else {
+			return (position, velocity)
+		}
+
+		let deltaTime = CGFloat(deltaTime)
+		var acceleration = CGPoint(
+			x: -velocity.x * dampingCoefficient,
+			y: -velocity.y * dampingCoefficient
+		)
+
+		if let target {
+			acceleration.x += (target.x - position.x) * springStiffness
+			acceleration.y += (target.y - position.y) * springStiffness
+		}
+
+		var velocity = velocity
+		velocity.x += acceleration.x * deltaTime
+		velocity.y += acceleration.y * deltaTime
+
+		var position = position
+		position.x += velocity.x * deltaTime
+		position.y += velocity.y * deltaTime
+
+		return (position, velocity)
 	}
 }
 
