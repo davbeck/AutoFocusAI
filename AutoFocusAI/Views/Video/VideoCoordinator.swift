@@ -79,11 +79,17 @@ final class VideoCoordinator {
 
 		do {
 			let analysis = try await reframer.analyze(asset: asset)
-			async let outputItem = reframer.makeOutputPlayerItem(asset: asset, analysis: analysis)
-			async let comparisonItem = reframer.makeComparisonPlayerItem(asset: asset, analysis: analysis)
+			async let outputVideoComposition = reframer.makeOutputVideoComposition(asset: asset, analysis: analysis)
+			let comparisonAsset = try await VideoReframer.makeComparisonAsset(from: asset)
+			async let comparisonVideoComposition = reframer.makeComparisonVideoComposition(asset: comparisonAsset, analysis: analysis)
 
-			self.outputItem = try await outputItem
-			self.comparisonItem = try await comparisonItem
+			let outputItem = AVPlayerItem(asset: asset)
+			outputItem.videoComposition = try await outputVideoComposition
+			self.outputItem = outputItem
+
+			let comparisonItem = AVPlayerItem(asset: comparisonAsset)
+			comparisonItem.videoComposition = try await comparisonVideoComposition
+			self.comparisonItem = comparisonItem
 
 			hasComparisonPreview = true
 			errorText = nil

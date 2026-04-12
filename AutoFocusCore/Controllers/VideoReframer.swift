@@ -106,18 +106,6 @@ public actor VideoReframer {
 		try await export(asset: asset, analysis: analysis, outputURL: outputURL)
 	}
 
-	public func makeComparisonPlayerItem(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVPlayerItem {
-		let item = AVPlayerItem(asset: asset)
-		item.videoComposition = try await makeComparisonVideoComposition(asset: asset, analysis: analysis)
-		return item
-	}
-
-	public func makeOutputPlayerItem(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVPlayerItem {
-		let item = AVPlayerItem(asset: asset)
-		item.videoComposition = try await makeVideoComposition(asset: asset, analysis: analysis)
-		return item
-	}
-
 	public func export(asset: AVAsset, analysis: ReframingAnalysis, outputURL: URL) async throws {
 		let videoComposition = try await self.makeVideoComposition(asset: asset, analysis: analysis)
 
@@ -134,50 +122,83 @@ public actor VideoReframer {
 		try await exportSession.export(to: outputURL, as: Self.outputFileType(for: outputURL))
 	}
 
-	private func makeVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVMutableVideoComposition {
-		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+	public func makeOutputVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
+		try await makeVideoComposition(asset: asset, analysis: analysis)
+	}
+
+	public func makeComparisonVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
+		try await buildComparisonVideoComposition(asset: asset, analysis: analysis)
+	}
+
+	public static func makeComparisonAsset(from asset: AVAsset) async throws -> AVAsset {
+		guard let sourceTrack = try await asset.loadTracks(withMediaType: .video).first else {
 			throw VideoReframerError.noVideoTrackFound
 		}
 
-		let nominalFrameRate = try await track.load(.nominalFrameRate)
-		let frameDuration: CMTime
-		if nominalFrameRate > 0 {
-			frameDuration = CMTime(value: 1, timescale: CMTimeScale(nominalFrameRate.rounded()))
-		} else {
-			frameDuration = CMTime(value: 1, timescale: 30)
+		let duration = try await asset.load(.duration)
+		let preferredTransform = try await sourceTrack.load(.preferredTransform)
+
+		let composition = AVMutableComposition()
+		guard
+			let leftTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
+			let rightTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+		else {
+			throw VideoReframerError.exportSessionUnavailable
 		}
 
-		let composition = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-			guard let cropRect = analysis.interpolatedBounds(at: request.compositionTime) else {
-				request.finish(with: request.sourceImage, context: nil)
-				return
-			}
+		let timeRange = CMTimeRange(start: .zero, duration: duration)
+		try leftTrack.insertTimeRange(timeRange, of: sourceTrack, at: .zero)
+		try rightTrack.insertTimeRange(timeRange, of: sourceTrack, at: .zero)
+		leftTrack.preferredTransform = preferredTransform
+		rightTrack.preferredTransform = preferredTransform
 
-			let outputImage = Self.reframedImage(
-				request.sourceImage,
-				cropRect: cropRect,
-				renderSize: analysis.renderSize
-			)
-			request.finish(with: outputImage, context: nil)
-		}
-
-		composition.renderSize = analysis.renderSize
-		composition.frameDuration = frameDuration
 		return composition
 	}
 
-	private func makeComparisonVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVMutableVideoComposition {
+	private func makeVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
+		try await buildConfiguredOutputVideoComposition(asset: asset, analysis: analysis)
+	}
+
+	private func buildConfiguredOutputVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
 			throw VideoReframerError.noVideoTrackFound
 		}
 
-		let nominalFrameRate = try await track.load(.nominalFrameRate)
-		let frameDuration: CMTime
-		if nominalFrameRate > 0 {
-			frameDuration = CMTime(value: 1, timescale: CMTimeScale(nominalFrameRate.rounded()))
-		} else {
-			frameDuration = CMTime(value: 1, timescale: 30)
+		var layerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: track)
+		Self.configureReframingTransforms(
+			&layerConfiguration,
+			shotStates: analysis.shotStates,
+			sourceSize: analysis.sourceSize,
+			renderSize: analysis.renderSize
+		)
+
+		let instruction = AVVideoCompositionInstruction(
+			configuration: .init(
+				backgroundColor: CGColor(gray: 0, alpha: 1),
+				layerInstructions: [AVVideoCompositionLayerInstruction(configuration: layerConfiguration)],
+				timeRange: CMTimeRange(start: .zero, duration: try await asset.load(.duration))
+			)
+		)
+
+		var configuration = try await AVVideoComposition.Configuration(for: asset)
+		configuration.frameDuration = try await Self.frameDuration(for: track)
+		configuration.instructions = [instruction]
+		configuration.renderSize = analysis.renderSize
+		configuration.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
+		return AVVideoComposition(configuration: configuration)
+	}
+
+	private func buildComparisonVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
+		try await buildConfiguredComparisonVideoComposition(asset: asset, analysis: analysis)
+	}
+
+	private func buildConfiguredComparisonVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
+		let tracks = try await asset.loadTracks(withMediaType: .video)
+		guard tracks.count >= 2 else {
+			throw VideoReframerError.noVideoTrackFound
 		}
+		let leftTrack = tracks[0]
+		let rightTrack = tracks[1]
 
 		let comparisonHeight = max(1, min(analysis.sourceSize.height, analysis.renderSize.height))
 		let originalAspect = analysis.sourceSize.width / max(analysis.sourceSize.height, 1)
@@ -195,35 +216,163 @@ public actor VideoReframer {
 			height: comparisonHeight.rounded()
 		)
 
-		let composition = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-			let background = CIImage(color: .black).cropped(
-				to: CGRect(origin: .zero, size: comparisonRenderSize)
-			)
-			let original = Self.aspectFittedImage(
-				request.sourceImage,
-				into: CGRect(origin: .zero, size: originalPanelSize)
-			)
+		var leftLayerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: leftTrack)
+		leftLayerConfiguration.setTransform(
+			Self.aspectFittedTransform(
+				sourceSize: analysis.sourceSize,
+				destinationRect: CGRect(origin: .zero, size: originalPanelSize)
+			),
+			at: .zero
+		)
 
-			guard let cropRect = analysis.interpolatedBounds(at: request.compositionTime) else {
-				request.finish(with: original.composited(over: background), context: nil)
-				return
-			}
+		var rightLayerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: rightTrack)
+		Self.configureReframingTransforms(
+			&rightLayerConfiguration,
+			shotStates: analysis.shotStates,
+			sourceSize: analysis.sourceSize,
+			renderSize: outputPanelSize,
+			xOffset: originalPanelSize.width
+		)
+		Self.configureCropRectangles(
+			&rightLayerConfiguration,
+			shotStates: analysis.shotStates,
+			sourceSize: analysis.sourceSize
+		)
 
-			let reframed = Self.reframedImage(
-				request.sourceImage,
-				cropRect: cropRect,
-				renderSize: outputPanelSize
+		let instruction = AVVideoCompositionInstruction(
+			configuration: .init(
+				backgroundColor: CGColor(gray: 0, alpha: 1),
+				layerInstructions: [
+					AVVideoCompositionLayerInstruction(configuration: rightLayerConfiguration),
+					AVVideoCompositionLayerInstruction(configuration: leftLayerConfiguration),
+				],
+				timeRange: CMTimeRange(start: .zero, duration: try await asset.load(.duration))
 			)
-			.transformed(by: .init(translationX: originalPanelSize.width, y: 0))
+		)
 
-			let outputImage = original
-				.composited(over: reframed.composited(over: background))
-			request.finish(with: outputImage, context: nil)
+		var configuration = try await AVVideoComposition.Configuration(for: asset)
+		configuration.frameDuration = try await Self.frameDuration(for: leftTrack)
+		configuration.instructions = [instruction]
+		configuration.renderSize = comparisonRenderSize
+		configuration.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
+		return AVVideoComposition(configuration: configuration)
+	}
+
+	private static func frameDuration(for track: AVAssetTrack) async throws -> CMTime {
+		let nominalFrameRate = try await track.load(.nominalFrameRate)
+		if nominalFrameRate > 0 {
+			return CMTime(value: 1, timescale: CMTimeScale(nominalFrameRate.rounded()))
+		} else {
+			return CMTime(value: 1, timescale: 30)
 		}
+	}
 
-		composition.renderSize = comparisonRenderSize
-		composition.frameDuration = frameDuration
-		return composition
+	@available(macOS 26, *)
+	private static func configureReframingTransforms(
+		_ configuration: inout AVVideoCompositionLayerInstruction.Configuration,
+		shotStates: [FrameData<ShotState>],
+		sourceSize: CGSize,
+		renderSize: CGSize,
+		xOffset: CGFloat = 0,
+		yOffset: CGFloat = 0
+	) {
+		guard let firstState = shotStates.first else { return }
+
+		configuration.setTransform(
+			transform(for: firstState.value.bounds, sourceSize: sourceSize, renderSize: renderSize, xOffset: xOffset, yOffset: yOffset),
+			at: .zero
+		)
+
+		for (from, to) in zip(shotStates, shotStates.dropFirst()) {
+			let timeRange = CMTimeRange(start: from.presentationTime, end: to.presentationTime)
+			guard timeRange.duration > .zero else { continue }
+
+			configuration.addTransformRamp(
+				.init(
+					timeRange: timeRange,
+					start: transform(
+						for: from.value.bounds,
+						sourceSize: sourceSize,
+						renderSize: renderSize,
+						xOffset: xOffset,
+						yOffset: yOffset
+					),
+					end: transform(
+						for: to.value.bounds,
+						sourceSize: sourceSize,
+						renderSize: renderSize,
+						xOffset: xOffset,
+						yOffset: yOffset
+					)
+				)
+			)
+		}
+	}
+
+	@available(macOS 26, *)
+	private static func configureCropRectangles(
+		_ configuration: inout AVVideoCompositionLayerInstruction.Configuration,
+		shotStates: [FrameData<ShotState>],
+		sourceSize: CGSize
+	) {
+		guard let firstState = shotStates.first else { return }
+
+		configuration.setCropRectangle(videoSpaceRect(for: firstState.value.bounds, sourceSize: sourceSize), at: .zero)
+
+		for (from, to) in zip(shotStates, shotStates.dropFirst()) {
+			let timeRange = CMTimeRange(start: from.presentationTime, end: to.presentationTime)
+			guard timeRange.duration > .zero else { continue }
+
+			configuration.addCropRectangleRamp(
+				.init(
+					timeRange: timeRange,
+					start: videoSpaceRect(for: from.value.bounds, sourceSize: sourceSize),
+					end: videoSpaceRect(for: to.value.bounds, sourceSize: sourceSize)
+				)
+			)
+		}
+	}
+
+	private static func transform(
+		for bounds: CGRect,
+		sourceSize: CGSize,
+		renderSize: CGSize,
+		xOffset: CGFloat = 0,
+		yOffset: CGFloat = 0
+	) -> CGAffineTransform {
+		let videoRect = videoSpaceRect(for: bounds, sourceSize: sourceSize)
+		let scaleX = renderSize.width / max(videoRect.width, 1)
+		let scaleY = renderSize.height / max(videoRect.height, 1)
+		return .init(
+			a: scaleX,
+			b: 0,
+			c: 0,
+			d: scaleY,
+			tx: xOffset - videoRect.minX * scaleX,
+			ty: yOffset - videoRect.minY * scaleY
+		)
+	}
+
+	private static func videoSpaceRect(for bounds: CGRect, sourceSize: CGSize) -> CGRect {
+		CGRect(
+			x: bounds.minX,
+			y: sourceSize.height - bounds.maxY,
+			width: bounds.width,
+			height: bounds.height
+		)
+	}
+
+	private static func aspectFittedTransform(sourceSize: CGSize, destinationRect: CGRect) -> CGAffineTransform {
+		let scale = min(destinationRect.width / sourceSize.width, destinationRect.height / sourceSize.height)
+		let scaledSize = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+		return .init(
+			a: scale,
+			b: 0,
+			c: 0,
+			d: scale,
+			tx: destinationRect.minX + (destinationRect.width - scaledSize.width) / 2,
+			ty: destinationRect.minY + (destinationRect.height - scaledSize.height) / 2
+		)
 	}
 
 	private static func reframedImage(_ image: CIImage, cropRect: CGRect, renderSize: CGSize) -> CIImage {

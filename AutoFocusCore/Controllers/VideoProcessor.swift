@@ -10,7 +10,7 @@ public struct VideoProcessingConfiguration: Sendable {
 	}
 }
 
-public actor VideoProcessor {
+public struct VideoProcessor {
 	public enum Error: Swift.Error {
 		case noVideoTrackFound
 	}
