@@ -6,13 +6,6 @@ struct Inspector: View {
 	var body: some View {
 		ScrollView {}
 			.disabled(isProcessing)
-			.overlay(alignment: .bottom) {
-				if isProcessing {
-					Text("Processing...")
-						.foregroundStyle(.secondary)
-						.padding()
-				}
-			}
 	}
 }
 

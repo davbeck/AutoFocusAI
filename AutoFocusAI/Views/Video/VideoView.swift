@@ -1,16 +1,47 @@
 import AVKit
+import Observation
 import SwiftUI
 
 struct VideoView: View {
 	var coordinator: VideoCoordinator
 
 	var body: some View {
-		VideoPlayer(player: coordinator.player)
-			.onAppear { coordinator.player.play() }
-			.onDisappear { coordinator.player.pause() }
+		@Bindable var coordinator = coordinator
+
+		VStack(alignment: .leading, spacing: 12) {
+			HStack {
+				Picker("View", selection: $coordinator.previewMode) {
+					Text("Original")
+						.tag(VideoCoordinator.PreviewMode.original)
+
+					Text("Output")
+						.selectionDisabled(!coordinator.hasComparisonPreview)
+						.tag(VideoCoordinator.PreviewMode.output)
+
+					Text("Both")
+						.selectionDisabled(!coordinator.hasComparisonPreview)
+						.tag(VideoCoordinator.PreviewMode.comparison)
+				}
+				.pickerStyle(.segmented)
+				.labelsHidden()
+
+				if coordinator.isProcessing {
+					ProgressView()
+						.controlSize(.small)
+				}
+			}
+
+			if let errorText = coordinator.errorText {
+				Text(errorText)
+			}
+
+			ZStack {
+				VideoPlayer(player: coordinator.player)
+			}
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+		.onAppear { coordinator.play() }
+		.onDisappear { coordinator.pause() }
 	}
 }
-
-// #Preview {
-//    VideoView()
-// }

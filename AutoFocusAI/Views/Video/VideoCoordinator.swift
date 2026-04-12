@@ -2,121 +2,121 @@
 import AutoFocusCore
 import Foundation
 import Observation
-import SwiftUI
-import Vision
 
 @MainActor
 @Observable
 final class VideoCoordinator {
+	enum PreviewMode: Hashable {
+		case original
+		case output
+		case comparison
+	}
+
 	let url: URL
 
 	private let asset: AVAsset
-//	private let playerItem: AVPlayerItem
-	var player: AVPlayer
-	private var looper: AVPlayerLooper
+	private let reframer = VideoReframer()
+	private let originalItem: AVPlayerItem
+	private var outputItem: AVPlayerItem?
+	private var comparisonItem: AVPlayerItem?
+
+	let player: AVPlayer
 
 	var isProcessing = false
+	var hasComparisonPreview = false
+	var errorText: String?
+	var previewMode: PreviewMode = .original {
+		didSet {
+			guard previewMode != oldValue else { return }
+			updatePreviewMode()
+		}
+	}
 
-	var poseFrames: [FrameData<[HumanBodyPoseObservation]>] = []
-
-	var currentTime: CMTime?
+	private var loopObserver: NSObjectProtocol?
 
 	init(url: URL) {
 		self.url = url
-
-		asset = AVURLAsset(url: url)
+		self.asset = AVURLAsset(url: url)
 
 		let playerItem = AVPlayerItem(asset: asset)
-		let player = AVQueuePlayer(playerItem: playerItem)
-		looper = AVPlayerLooper(player: player, templateItem: playerItem)
-//			let player = AVPlayer(playerItem: playerItem)
+		self.originalItem = playerItem
+		let player = AVPlayer(playerItem: playerItem)
 		player.isMuted = true
+		player.actionAtItemEnd = .none
 
 		self.player = player
+		self.installLoopObserver(for: playerItem)
 
-		let videoProcessor = VideoProcessor(asset: asset)
+		Task { await self.loadComparisonPreview() }
+	}
 
-		Task {
-			isProcessing = true
-			defer { isProcessing = false }
+	func play() {
+		player.play()
+	}
 
-			do {
-				self.poseFrames = try await videoProcessor.process()
-			} catch {
-				print("process failed: \(error)")
+	func pause() {
+		player.pause()
+	}
+
+	private func installLoopObserver(for item: AVPlayerItem) {
+		if let loopObserver {
+			NotificationCenter.default.removeObserver(loopObserver)
+		}
+
+		loopObserver = NotificationCenter.default.addObserver(
+			forName: .AVPlayerItemDidPlayToEndTime,
+			object: item,
+			queue: .main
+		) { [weak self] _ in
+			self?.player.seek(to: .zero)
+			self?.player.play()
+		}
+	}
+
+	private func loadComparisonPreview() async {
+		isProcessing = true
+		defer { isProcessing = false }
+
+		do {
+			let analysis = try await reframer.analyze(asset: asset)
+			async let outputItem = reframer.makeOutputPlayerItem(asset: asset, analysis: analysis)
+			async let comparisonItem = reframer.makeComparisonPlayerItem(asset: asset, analysis: analysis)
+
+			self.outputItem = try await outputItem
+			self.comparisonItem = try await comparisonItem
+
+			hasComparisonPreview = true
+			errorText = nil
+			updatePreviewMode()
+		} catch {
+			errorText = error.localizedDescription
+		}
+	}
+
+	private func updatePreviewMode() {
+		let item: AVPlayerItem = switch previewMode {
+		case .original:
+			originalItem
+		case .output:
+			outputItem ?? originalItem
+		case .comparison:
+			comparisonItem ?? originalItem
+		}
+
+		guard player.currentItem !== item else { return }
+
+		let currentTime = player.currentTime()
+		let shouldResumePlayback = player.rate != 0 || player.timeControlStatus != .paused
+
+		installLoopObserver(for: item)
+		player.replaceCurrentItem(with: item)
+
+		Task { @MainActor [weak self] in
+			guard let self else { return }
+			await self.player.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero)
+			if shouldResumePlayback {
+				self.player.play()
 			}
 		}
-
-		player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { time in
-			MainActor.assumeIsolated {
-				self.currentTime = time
-			}
-		}
-	}
-
-	var currentPoses: [HumanBodyPoseObservation] {
-		guard let currentTime else { return [] }
-		return poseFrames.binarySearch(for: currentTime, transform: { $0.presentationTime }).value?.value ?? []
-	}
-
-//	func updatePoseComposition() async {
-//		guard let poseFrames else { return }
-//
-//		let renderer = FrameAnnotationRenderer()
-//
-//		do {
-//			let poseComposition = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-//				let compositionTime = request.compositionTime
-//				print("videoComposition", compositionTime)
-//				guard
-//					let poses = poseFrames.binarySearch(
-//						for: compositionTime,
-//						transform: { $0.presentationTime }
-//					).value?.value
-//				else { return }
-//
-//				Task { @MainActor in
-//					renderer.poses = poses
-//					if let annotation = renderer.image {
-//						request.finish(
-//							with: annotation.composited(over: request.sourceImage),
-//							context: nil
-//						)
-//					} else {
-//						request.finish(with: request.sourceImage, context: nil)
-//					}
-//				}
-//			}
-//
-//			let playerItem = AVPlayerItem(asset: asset)
-//			playerItem.videoComposition = poseComposition
-//
-//			let player = AVQueuePlayer(playerItem: playerItem)
-//			looper = AVPlayerLooper(player: player, templateItem: playerItem)
-//	//			let player = AVPlayer(playerItem: playerItem)
-//			player.isMuted = true
-//
-//			self.player = player
-//		} catch {
-//			fatalError("\(error)")
-//		}
-//	}
-}
-
-@MainActor
-final class FrameAnnotationRenderer {
-	let renderer = ImageRenderer(content: FrameAnnotationView(poses: []))
-
-	var poses: [HumanBodyPoseObservation] {
-		get {
-			renderer.content.poses
-		}
-		set {
-			renderer.content.poses = newValue
-		}
-	}
-
-	var image: CIImage? {
-		renderer.cgImage.map { CIImage(cgImage: $0) }
 	}
 }

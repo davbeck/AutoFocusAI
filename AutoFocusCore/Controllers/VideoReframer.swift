@@ -106,6 +106,18 @@ public actor VideoReframer {
 		try await export(asset: asset, analysis: analysis, outputURL: outputURL)
 	}
 
+	public func makeComparisonPlayerItem(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVPlayerItem {
+		let item = AVPlayerItem(asset: asset)
+		item.videoComposition = try await makeComparisonVideoComposition(asset: asset, analysis: analysis)
+		return item
+	}
+
+	public func makeOutputPlayerItem(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVPlayerItem {
+		let item = AVPlayerItem(asset: asset)
+		item.videoComposition = try await makeVideoComposition(asset: asset, analysis: analysis)
+		return item
+	}
+
 	public func export(asset: AVAsset, analysis: ReframingAnalysis, outputURL: URL) async throws {
 		let videoComposition = try await self.makeVideoComposition(asset: asset, analysis: analysis)
 
@@ -154,6 +166,66 @@ public actor VideoReframer {
 		return composition
 	}
 
+	private func makeComparisonVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVMutableVideoComposition {
+		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+			throw VideoReframerError.noVideoTrackFound
+		}
+
+		let nominalFrameRate = try await track.load(.nominalFrameRate)
+		let frameDuration: CMTime
+		if nominalFrameRate > 0 {
+			frameDuration = CMTime(value: 1, timescale: CMTimeScale(nominalFrameRate.rounded()))
+		} else {
+			frameDuration = CMTime(value: 1, timescale: 30)
+		}
+
+		let comparisonHeight = max(1, min(analysis.sourceSize.height, analysis.renderSize.height))
+		let originalAspect = analysis.sourceSize.width / max(analysis.sourceSize.height, 1)
+		let outputAspect = analysis.renderSize.width / max(analysis.renderSize.height, 1)
+		let originalPanelSize = CGSize(
+			width: (comparisonHeight * originalAspect).rounded(),
+			height: comparisonHeight.rounded()
+		)
+		let outputPanelSize = CGSize(
+			width: (comparisonHeight * outputAspect).rounded(),
+			height: comparisonHeight.rounded()
+		)
+		let comparisonRenderSize = CGSize(
+			width: originalPanelSize.width + outputPanelSize.width,
+			height: comparisonHeight.rounded()
+		)
+
+		let composition = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
+			let background = CIImage(color: .black).cropped(
+				to: CGRect(origin: .zero, size: comparisonRenderSize)
+			)
+			let original = Self.aspectFittedImage(
+				request.sourceImage,
+				into: CGRect(origin: .zero, size: originalPanelSize)
+			)
+
+			guard let cropRect = analysis.interpolatedBounds(at: request.compositionTime) else {
+				request.finish(with: original.composited(over: background), context: nil)
+				return
+			}
+
+			let reframed = Self.reframedImage(
+				request.sourceImage,
+				cropRect: cropRect,
+				renderSize: outputPanelSize
+			)
+			.transformed(by: .init(translationX: originalPanelSize.width, y: 0))
+
+			let outputImage = original
+				.composited(over: reframed.composited(over: background))
+			request.finish(with: outputImage, context: nil)
+		}
+
+		composition.renderSize = comparisonRenderSize
+		composition.frameDuration = frameDuration
+		return composition
+	}
+
 	private static func reframedImage(_ image: CIImage, cropRect: CGRect, renderSize: CGSize) -> CIImage {
 		let cropped = image.cropped(to: cropRect)
 		let translated = cropped.transformed(by: .init(translationX: -cropRect.minX, y: -cropRect.minY))
@@ -162,6 +234,17 @@ public actor VideoReframer {
 			y: renderSize.height / cropRect.height
 		)
 		return translated.transformed(by: scaleTransform)
+	}
+
+	private static func aspectFittedImage(_ image: CIImage, into destinationRect: CGRect) -> CIImage {
+		let extent = image.extent
+		let normalized = image.transformed(by: .init(translationX: -extent.minX, y: -extent.minY))
+		let scale = min(destinationRect.width / extent.width, destinationRect.height / extent.height)
+		let scaledSize = CGSize(width: extent.width * scale, height: extent.height * scale)
+		let scaled = normalized.transformed(by: .init(scaleX: scale, y: scale))
+		let x = destinationRect.minX + (destinationRect.width - scaledSize.width) / 2
+		let y = destinationRect.minY + (destinationRect.height - scaledSize.height) / 2
+		return scaled.transformed(by: .init(translationX: x, y: y))
 	}
 
 	private static func outputFileType(for outputURL: URL) throws -> AVFileType {
