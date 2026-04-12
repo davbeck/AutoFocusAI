@@ -55,6 +55,7 @@ public enum ReframingProgressStage: String, Sendable {
 	case poseDetection
 	case shotTracking
 	case buildingPreview
+	case exporting
 
 	public var label: String {
 		switch self {
@@ -64,6 +65,8 @@ public enum ReframingProgressStage: String, Sendable {
 			"Cropping..."
 		case .buildingPreview:
 			"Building Preview..."
+		case .exporting:
+			"Exporting..."
 		}
 	}
 }
@@ -149,13 +152,22 @@ public actor VideoReframer {
 		)
 	}
 
-	public func export(inputURL: URL, outputURL: URL) async throws {
+	public func export(
+		inputURL: URL,
+		outputURL: URL,
+		progressHandler: ProgressHandler? = nil
+	) async throws {
 		let asset = AVURLAsset(url: inputURL)
-		let analysis = try await analyze(asset: asset)
-		try await export(asset: asset, analysis: analysis, outputURL: outputURL)
+		let analysis = try await analyze(asset: asset, progressHandler: progressHandler)
+		try await export(asset: asset, analysis: analysis, outputURL: outputURL, progressHandler: progressHandler)
 	}
 
-	public func export(asset: AVAsset, analysis: ReframingAnalysis, outputURL: URL) async throws {
+	public func export(
+		asset: AVAsset,
+		analysis: ReframingAnalysis,
+		outputURL: URL,
+		progressHandler: ProgressHandler? = nil
+	) async throws {
 		let videoComposition = try await self.makeVideoComposition(asset: asset, analysis: analysis)
 
 		guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
@@ -168,7 +180,9 @@ public actor VideoReframer {
 
 		exportSession.videoComposition = videoComposition
 		exportSession.shouldOptimizeForNetworkUse = true
+		await progressHandler?(.init(stage: .exporting, fractionCompleted: 0))
 		try await exportSession.export(to: outputURL, as: Self.outputFileType(for: outputURL))
+		await progressHandler?(.init(stage: .exporting, fractionCompleted: 1))
 	}
 
 	public func makeOutputVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {

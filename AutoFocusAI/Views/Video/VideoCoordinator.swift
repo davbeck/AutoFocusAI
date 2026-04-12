@@ -19,6 +19,7 @@ final class VideoCoordinator {
 	private let originalItem: AVPlayerItem
 	private var outputItem: AVPlayerItem?
 	private var comparisonItem: AVPlayerItem?
+	private var analysis: ReframingAnalysis?
 
 	let player: AVPlayer
 
@@ -59,6 +60,39 @@ final class VideoCoordinator {
 		player.pause()
 	}
 
+	var suggestedExportFilename: String {
+		"\(url.deletingPathExtension().lastPathComponent)-reframed.mov"
+	}
+
+	func export(to outputURL: URL) async {
+		guard !isProcessing else { return }
+
+		isProcessing = true
+		processingProgress = .init(stage: .exporting, fractionCompleted: 0)
+		defer {
+			isProcessing = false
+			processingProgress = nil
+		}
+
+		do {
+			let analysis = try await loadAnalysis { [weak self] progress in
+				await MainActor.run {
+					self?.processingProgress = progress
+				}
+			}
+
+			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL) { [weak self] progress in
+				await MainActor.run {
+					self?.processingProgress = progress
+				}
+			}
+
+			errorText = nil
+		} catch {
+			errorText = error.localizedDescription
+		}
+	}
+
 	private func installLoopObserver(for item: AVPlayerItem) {
 		if let loopObserver {
 			NotificationCenter.default.removeObserver(loopObserver)
@@ -83,7 +117,7 @@ final class VideoCoordinator {
 		}
 
 		do {
-			let analysis = try await reframer.analyze(asset: asset) { [weak self] progress in
+			let analysis = try await loadAnalysis { [weak self] progress in
 				await MainActor.run {
 					self?.processingProgress = progress
 				}
@@ -110,6 +144,18 @@ final class VideoCoordinator {
 		} catch {
 			errorText = error.localizedDescription
 		}
+	}
+
+	private func loadAnalysis(
+		progressHandler: VideoReframer.ProgressHandler? = nil
+	) async throws -> ReframingAnalysis {
+		if let analysis {
+			return analysis
+		}
+
+		let analysis = try await reframer.analyze(asset: asset, progressHandler: progressHandler)
+		self.analysis = analysis
+		return analysis
 	}
 
 	private func updatePreviewMode() {

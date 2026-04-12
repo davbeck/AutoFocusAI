@@ -1,6 +1,8 @@
+import AppKit
 import AVKit
 import CoreImage.CIFilterBuiltins
 import SwiftUI
+import UniformTypeIdentifiers
 import Vision
 
 struct ContentView: View {
@@ -59,6 +61,17 @@ struct ContentView: View {
 		.inspector(isPresented: $isInspectorPresented, content: {
 			Inspector(isProcessing: coordinator?.isProcessing == true)
 		})
+		.toolbar {
+			ToolbarItem(placement: .primaryAction) {
+				Button("Export") {
+					guard let coordinator, let outputURL = exportDestination(for: coordinator) else { return }
+					Task {
+						await coordinator.export(to: outputURL)
+					}
+				}
+				.disabled(coordinator?.hasComparisonPreview != true || coordinator?.isProcessing == true)
+			}
+		}
 		.task {
 			// var shotFrames: [FrameData<ShotState>] = []
 //			let videoAsset = AVURLAsset(url: url)
@@ -189,6 +202,17 @@ struct ContentView: View {
 		.onChange(of: url, initial: true) { oldValue, newValue in
 			self.coordinator = newValue.map { VideoCoordinator(url: $0) }
 		}
+	}
+
+	private func exportDestination(for coordinator: VideoCoordinator) -> URL? {
+		let panel = NSSavePanel()
+		panel.allowedContentTypes = [.quickTimeMovie, .mpeg4Movie]
+		panel.canCreateDirectories = true
+		panel.directoryURL = coordinator.url.deletingLastPathComponent()
+		panel.nameFieldStringValue = coordinator.suggestedExportFilename
+
+		guard panel.runModal() == .OK else { return nil }
+		return panel.url
 	}
 }
 
