@@ -15,6 +15,8 @@ public struct VideoProcessor {
 		case noVideoTrackFound
 	}
 
+	public typealias ProgressHandler = @Sendable (Double) async -> Void
+
 	public let asset: AVAsset
 	public let configuration: VideoProcessingConfiguration
 
@@ -23,7 +25,7 @@ public struct VideoProcessor {
 		self.configuration = configuration
 	}
 
-	public func process() async throws -> [FrameData<[HumanBodyPoseObservation]>] {
+	public func process(progressHandler: ProgressHandler? = nil) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Error.noVideoTrackFound }
 		let duration = try await asset.load(.duration)
 		let nominalFrameRate = try await track.load(.nominalFrameRate)
@@ -37,11 +39,16 @@ public struct VideoProcessor {
 			forNominalFrameRate: nominalFrameRate,
 			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
 		)
+		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
-		var requestedTime = CMTime.zero
+		frames.reserveCapacity(requestedTimes.count)
 
-		while requestedTime < duration {
+		if let progressHandler {
+			await progressHandler(0)
+		}
+
+		for (index, requestedTime) in requestedTimes.enumerated() {
 			let (image, actualTime) = try await generator.image(at: requestedTime)
 
 			var request = DetectHumanBodyPoseRequest()
@@ -50,8 +57,9 @@ public struct VideoProcessor {
 			let poses = try await handler.perform(request)
 
 			frames.append(FrameData(presentationTime: actualTime, value: poses))
-
-			requestedTime = requestedTime + sampleInterval
+			if let progressHandler {
+				await progressHandler(Double(index + 1) / Double(requestedTimes.count))
+			}
 		}
 
 		return frames
@@ -61,6 +69,20 @@ public struct VideoProcessor {
 		let clampedMaximum = max(maximumFramesPerSecond, 1)
 		let frameRate = nominalFrameRate > 0 ? min(Double(nominalFrameRate), clampedMaximum) : clampedMaximum
 		return CMTime(seconds: 1 / frameRate, preferredTimescale: 600)
+	}
+
+	private static func requestedTimes(duration: CMTime, sampleInterval: CMTime) -> [CMTime] {
+		guard duration > .zero, sampleInterval > .zero else { return [] }
+
+		var times: [CMTime] = []
+		var requestedTime = CMTime.zero
+
+		while requestedTime < duration {
+			times.append(requestedTime)
+			requestedTime = requestedTime + sampleInterval
+		}
+
+		return times
 	}
 }
 

@@ -23,6 +23,7 @@ final class VideoCoordinator {
 	let player: AVPlayer
 
 	var isProcessing = false
+	var processingProgress: ReframingProgress?
 	var hasComparisonPreview = false
 	var errorText: String?
 	var previewMode: PreviewMode = .original {
@@ -75,20 +76,32 @@ final class VideoCoordinator {
 
 	private func loadComparisonPreview() async {
 		isProcessing = true
-		defer { isProcessing = false }
+		processingProgress = .init(stage: .poseDetection, fractionCompleted: 0)
+		defer {
+			isProcessing = false
+			processingProgress = nil
+		}
 
 		do {
-			let analysis = try await reframer.analyze(asset: asset)
+			let analysis = try await reframer.analyze(asset: asset) { [weak self] progress in
+				await MainActor.run {
+					self?.processingProgress = progress
+				}
+			}
+			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.95)
 			async let outputVideoComposition = reframer.makeOutputVideoComposition(asset: asset, analysis: analysis)
 			let comparisonAsset = try await VideoReframer.makeComparisonAsset(from: asset)
+			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.97)
 			async let comparisonVideoComposition = reframer.makeComparisonVideoComposition(asset: comparisonAsset, analysis: analysis)
 
 			let outputItem = AVPlayerItem(asset: asset)
 			outputItem.videoComposition = try await outputVideoComposition
+			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.985)
 			self.outputItem = outputItem
 
 			let comparisonItem = AVPlayerItem(asset: comparisonAsset)
 			comparisonItem.videoComposition = try await comparisonVideoComposition
+			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 1)
 			self.comparisonItem = comparisonItem
 
 			hasComparisonPreview = true

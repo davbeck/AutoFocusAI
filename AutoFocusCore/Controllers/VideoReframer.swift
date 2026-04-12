@@ -51,6 +51,33 @@ public struct ReframingAnalysis: Sendable {
 	}
 }
 
+public enum ReframingProgressStage: String, Sendable {
+	case poseDetection
+	case shotTracking
+	case buildingPreview
+
+	public var label: String {
+		switch self {
+		case .poseDetection:
+			"Detecting poses..."
+		case .shotTracking:
+			"Cropping..."
+		case .buildingPreview:
+			"Building Preview..."
+		}
+	}
+}
+
+public struct ReframingProgress: Sendable {
+	public var stage: ReframingProgressStage
+	public var fractionCompleted: Double
+
+	public init(stage: ReframingProgressStage, fractionCompleted: Double) {
+		self.stage = stage
+		self.fractionCompleted = min(max(fractionCompleted, 0), 1)
+	}
+}
+
 public enum VideoReframerError: Swift.Error {
 	case noVideoTrackFound
 	case noDetectedSubject
@@ -61,25 +88,39 @@ public enum VideoReframerError: Swift.Error {
 }
 
 public actor VideoReframer {
+	public typealias ProgressHandler = @Sendable (ReframingProgress) async -> Void
+
+	private static let poseDetectionWeight = 0.7
+	private static let shotTrackingWeight = 0.25
+
 	public let configuration: ReframingConfiguration
 
 	public init(configuration: ReframingConfiguration = .init()) {
 		self.configuration = configuration
 	}
 
-	public func analyze(asset: AVAsset) async throws -> ReframingAnalysis {
+	public func analyze(asset: AVAsset, progressHandler: ProgressHandler? = nil) async throws -> ReframingAnalysis {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
 			throw VideoReframerError.noVideoTrackFound
 		}
 
 		let sourceSize = try await Self.sourceSize(for: track)
-		let poseFrames = try await VideoProcessor(asset: asset).process()
+		await progressHandler?(.init(stage: .poseDetection, fractionCompleted: 0))
+		let poseFrames = try await VideoProcessor(asset: asset).process { progress in
+			await progressHandler?(
+				.init(
+					stage: .poseDetection,
+					fractionCompleted: progress * Self.poseDetectionWeight
+				)
+			)
+		}
 		let tracker = ShotTracker(sourceSize: sourceSize, aspectRatio: configuration.aspectRatio)
 
 		var shotStates: [FrameData<ShotState>] = []
 		var detectedPoses = 0
+		let trackingCount = max(poseFrames.count, 1)
 
-		for frame in poseFrames {
+		for (index, frame) in poseFrames.enumerated() {
 			let pose = Self.primaryPose(in: frame.value, sourceSize: sourceSize)
 			if pose != nil {
 				detectedPoses += 1
@@ -87,6 +128,14 @@ public actor VideoReframer {
 
 			let state = await tracker.track(pose, at: frame.presentationTime)
 			shotStates.append(FrameData(presentationTime: frame.presentationTime, value: state))
+
+			await progressHandler?(
+				.init(
+					stage: .shotTracking,
+					fractionCompleted: Self.poseDetectionWeight
+						+ (Double(index + 1) / Double(trackingCount)) * Self.shotTrackingWeight
+				)
+			)
 		}
 
 		guard detectedPoses > 0 else {

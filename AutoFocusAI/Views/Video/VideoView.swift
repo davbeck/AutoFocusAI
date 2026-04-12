@@ -1,3 +1,4 @@
+import AutoFocusCore
 import AVKit
 import Observation
 import SwiftUI
@@ -25,9 +26,17 @@ struct VideoView: View {
 				.pickerStyle(.segmented)
 				.labelsHidden()
 
-				if coordinator.isProcessing {
-					ProgressView()
-						.controlSize(.small)
+				Spacer()
+
+				if let progress = coordinator.processingProgress {
+					HStack {
+						Text(progress.stage.label)
+							.font(.subheadline.weight(.medium))
+							.foregroundStyle(.secondary)
+
+						ProgressView(value: progress.fractionCompleted)
+							.frame(maxWidth: 300)
+					}
 				}
 			}
 
