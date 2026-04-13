@@ -32,13 +32,14 @@ public struct VideoProcessor {
 
 		let generator = AVAssetImageGenerator(asset: asset)
 		generator.appliesPreferredTrackTransform = true
-		generator.requestedTimeToleranceBefore = .zero
-		generator.requestedTimeToleranceAfter = .zero
 
 		let sampleInterval = Self.sampleInterval(
 			forNominalFrameRate: nominalFrameRate,
 			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
 		)
+		let frameTimeTolerance = Self.frameTimeTolerance(for: sampleInterval)
+		generator.requestedTimeToleranceBefore = frameTimeTolerance
+		generator.requestedTimeToleranceAfter = frameTimeTolerance
 		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
@@ -69,6 +70,11 @@ public struct VideoProcessor {
 		let clampedMaximum = max(maximumFramesPerSecond, 1)
 		let frameRate = nominalFrameRate > 0 ? min(Double(nominalFrameRate), clampedMaximum) : clampedMaximum
 		return CMTime(seconds: 1 / frameRate, preferredTimescale: 600)
+	}
+
+	public static func frameTimeTolerance(for sampleInterval: CMTime) -> CMTime {
+		guard sampleInterval > .zero else { return .zero }
+		return CMTimeMultiplyByFloat64(sampleInterval, multiplier: 0.5)
 	}
 
 	private static func requestedTimes(duration: CMTime, sampleInterval: CMTime) -> [CMTime] {
