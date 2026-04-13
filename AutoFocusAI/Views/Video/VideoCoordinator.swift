@@ -1,5 +1,5 @@
-@preconcurrency import AVFoundation
 import AutoFocusCore
+@preconcurrency import AVFoundation
 import Foundation
 import Observation
 
@@ -101,7 +101,7 @@ final class VideoCoordinator {
 		loopObserver = NotificationCenter.default.addObserver(
 			forName: .AVPlayerItemDidPlayToEndTime,
 			object: item,
-			queue: .main
+			queue: .main,
 		) { [weak self] _ in
 			self?.player.seek(to: .zero)
 			self?.player.play()
@@ -147,7 +147,7 @@ final class VideoCoordinator {
 	}
 
 	private func loadAnalysis(
-		progressHandler: VideoReframer.ProgressHandler? = nil
+		progressHandler: VideoReframer.ProgressHandler? = nil,
 	) async throws -> ReframingAnalysis {
 		if let analysis {
 			return analysis

@@ -83,6 +83,12 @@ Done when:
 - Stable footage analyzes faster than today.
 - Faster subject motion still produces smooth framing after interpolation.
 
+Explored, not adopted.
+
+- A motion-based adaptive cadence prototype was benchmarked.
+- On `TrackingExample.mov` it reduced analyzed frames to `650`, but total wall time still regressed to `57.24s`.
+- The prototype was reverted, so the fixed `10 FPS` pipeline remains the current implementation.
+
 ### Benchmarks
 
 Measured on the local `TrackingExample.mov` benchmark clip:
@@ -93,15 +99,16 @@ Measured on the local `TrackingExample.mov` benchmark clip:
 4. Reused request objects: `106.55s`
 5. `AVAssetReader` backend: `57.99s`
 6. Pipelined reader + detection (`2` in flight): `54.95s`
+7. Adaptive sampling prototype: `57.24s` (`650` analyzed frames, reverted)
 
 ### Remaining Work
 
-1. Add adaptive sampling.
-2. Decide whether ROI detection is worth revisiting after adaptive sampling changes the workload shape.
-3. Optionally add automated performance checks around the sermon benchmark clips.
+1. Decide whether ROI detection is worth revisiting now that both ROI and adaptive cadence prototypes regressed.
+2. Expand the benchmark helper into a small set of repeatable comparison runs if performance tuning remains active.
+3. Do a manual visual pass on representative sermon clips after the recent pose-processing changes.
 
 ### Revised Order
 
-1. Add adaptive sampling.
-2. Re-evaluate ROI only if adaptive sampling leaves obvious wasted full-frame work.
-3. Add benchmark automation if performance tuning remains active.
+1. Keep the current reader + pipeline path as the baseline.
+2. Use the benchmark helper to validate any future ROI or sampling experiments before adopting them.
+3. Revisit ROI only if a new detection strategy changes the workload enough to make it worth another pass.

@@ -34,7 +34,7 @@ struct AutoFocusCoreTests {
 
 		let value = frames.value(
 			atOrBefore: CMTime(seconds: 2.5, preferredTimescale: 600),
-			transform: { $0.presentationTime }
+			transform: { $0.presentationTime },
 		)?.value
 
 		#expect(value == 20)
@@ -50,7 +50,7 @@ struct AutoFocusCoreTests {
 	@Test
 	func frameTimeToleranceUsesHalfTheSampleInterval() {
 		let tolerance = VideoProcessor.frameTimeTolerance(
-			for: CMTime(seconds: 0.1, preferredTimescale: 600)
+			for: CMTime(seconds: 0.1, preferredTimescale: 600),
 		)
 
 		#expect(tolerance.seconds == 0.05)
@@ -60,7 +60,7 @@ struct AutoFocusCoreTests {
 	func detectionSizeDownscalesLongEdgePreservingAspectRatio() {
 		let size = VideoProcessor.detectionSize(
 			for: CGSize(width: 1920, height: 1080),
-			maximumLongEdge: 720
+			maximumLongEdge: 720,
 		)
 
 		#expect(size.width == 720)
@@ -71,7 +71,7 @@ struct AutoFocusCoreTests {
 	func detectionSizeDoesNotUpscaleSmallerFrames() {
 		let size = VideoProcessor.detectionSize(
 			for: CGSize(width: 640, height: 360),
-			maximumLongEdge: 720
+			maximumLongEdge: 720,
 		)
 
 		#expect(size.width == 640)
@@ -83,15 +83,15 @@ struct AutoFocusCoreTests {
 		#expect(VideoProcessor.imageOrientation(for: .identity) == .up)
 		#expect(
 			VideoProcessor.imageOrientation(for: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 0, ty: 0))
-				== .down
+				== .down,
 		)
 		#expect(
 			VideoProcessor.imageOrientation(for: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0))
-				== .right
+				== .right,
 		)
 		#expect(
 			VideoProcessor.imageOrientation(for: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0))
-				== .left
+				== .left,
 		)
 	}
 
@@ -105,7 +105,7 @@ struct AutoFocusCoreTests {
 			target: CGPoint(x: 120, y: 0),
 			deltaTime: 0.1,
 			springStiffness: 18,
-			dampingCoefficient: dampingCoefficient
+			dampingCoefficient: dampingCoefficient,
 		)
 		let secondStep = ShotTracker.springStep(
 			position: firstStep.position,
@@ -113,7 +113,7 @@ struct AutoFocusCoreTests {
 			target: CGPoint(x: 120, y: 0),
 			deltaTime: 0.1,
 			springStiffness: 18,
-			dampingCoefficient: dampingCoefficient
+			dampingCoefficient: dampingCoefficient,
 		)
 
 		#expect(firstStep.position.x > 0)
@@ -131,7 +131,7 @@ struct AutoFocusCoreTests {
 			target: nil,
 			deltaTime: 0.1,
 			springStiffness: 18,
-			dampingCoefficient: dampingCoefficient
+			dampingCoefficient: dampingCoefficient,
 		)
 
 		#expect(step.position.x > 0)
@@ -158,8 +158,8 @@ struct AutoFocusCoreTests {
 						bounds: CGRect(x: 100, y: 200, width: 600, height: 1080),
 						target: .zero,
 						subjectCenter: nil,
-						pose: nil
-					)
+						pose: nil,
+					),
 				),
 				FrameData(
 					presentationTime: CMTime(seconds: 2, preferredTimescale: 600),
@@ -167,10 +167,10 @@ struct AutoFocusCoreTests {
 						bounds: CGRect(x: 220, y: 260, width: 600, height: 1080),
 						target: .zero,
 						subjectCenter: nil,
-						pose: nil
-					)
+						pose: nil,
+					),
 				),
-			]
+			],
 		)
 
 		let bounds = analysis.interpolatedBounds(at: CMTime(seconds: 1.25, preferredTimescale: 600))

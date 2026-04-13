@@ -89,9 +89,8 @@ struct MetalView: NSViewRepresentable {
 				CGAffineTransform.identity
 					.scaledBy(
 						x: size.size.width / inputImage.extent.size.width,
-						y: size.size.height / inputImage.extent.size.height
-					)
-			)
+						y: size.size.height / inputImage.extent.size.height,
+					))
 			let x = -size.origin.x
 			let y = -size.origin.y
 
@@ -100,7 +99,7 @@ struct MetalView: NSViewRepresentable {
 				to: drawable.texture,
 				commandBuffer: commandBuffer,
 				bounds: CGRect(origin: CGPoint(x: x, y: y), size: view.drawableSize),
-				colorSpace: CGColorSpaceCreateDeviceRGB()
+				colorSpace: CGColorSpaceCreateDeviceRGB(),
 			)
 
 			commandBuffer.present(drawable)

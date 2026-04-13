@@ -21,7 +21,7 @@ public extension RandomAccessCollection {
 	/// Behavior is undefined if there is no such N.
 	func binarySearch<SearchValue: Comparable>(
 		for query: SearchValue,
-		transform: (Element) -> SearchValue
+		transform: (Element) -> SearchValue,
 	) -> BinarySearchResult<Index, Element> {
 		var low = startIndex
 		var high = endIndex
@@ -44,12 +44,12 @@ public extension RandomAccessCollection {
 
 	func value<SearchValue: Comparable>(
 		atOrBefore query: SearchValue,
-		transform: (Element) -> SearchValue
+		transform: (Element) -> SearchValue,
 	) -> Element? {
 		switch binarySearch(for: query, transform: transform) {
 		case .found(index: _, value: let value):
 			return value
-		case .insert(at: let index):
+		case let .insert(at: index):
 			guard index != startIndex else { return nil }
 			return self[self.index(before: index)]
 		}

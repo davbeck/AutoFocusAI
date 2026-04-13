@@ -17,8 +17,8 @@ struct DropTargetView: View {
 								lineWidth: 3,
 								lineCap: .round,
 								dash: [15, 10],
-								dashPhase: phase
-							)
+								dashPhase: phase,
+							),
 						)
 				}
 

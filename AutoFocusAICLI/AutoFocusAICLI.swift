@@ -6,7 +6,7 @@ import Foundation
 @main
 struct AutoFocusAICLI: AsyncParsableCommand {
 	static let configuration = CommandConfiguration(
-		abstract: "Analyze and reframe a video to keep the subject centered in a vertical crop."
+		abstract: "Analyze and reframe a video to keep the subject centered in a vertical crop.",
 	)
 
 	@Argument(help: "Path to the source video file.")

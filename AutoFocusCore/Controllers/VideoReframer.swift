@@ -9,7 +9,7 @@ public struct ReframingConfiguration: Sendable {
 
 	public init(
 		aspectRatio: CGSize = ShotTracker.defaultAspectRatio,
-		renderSize: CGSize = CGSize(width: 1080, height: 1920)
+		renderSize: CGSize = CGSize(width: 1080, height: 1920),
 	) {
 		self.aspectRatio = aspectRatio
 		self.renderSize = renderSize
@@ -31,7 +31,7 @@ public struct ReframingAnalysis: Sendable {
 		switch shotStates.binarySearch(for: compositionTime, transform: { $0.presentationTime }) {
 		case .found(index: _, value: let frame):
 			return frame.value.bounds
-		case .insert(at: let index):
+		case let .insert(at: index):
 			guard !shotStates.isEmpty else { return nil }
 			guard index != shotStates.startIndex else { return shotStates.first?.value.bounds }
 			guard index != shotStates.endIndex else { return shotStates.last?.value.bounds }
@@ -44,7 +44,7 @@ public struct ReframingAnalysis: Sendable {
 
 			let progress = max(
 				0,
-				min(1, (compositionTime.seconds - previousFrame.presentationTime.seconds) / duration)
+				min(1, (compositionTime.seconds - previousFrame.presentationTime.seconds) / duration),
 			)
 			return previousFrame.value.bounds.interpolated(to: nextFrame.value.bounds, progress: progress)
 		}
@@ -113,8 +113,8 @@ public actor VideoReframer {
 			await progressHandler?(
 				.init(
 					stage: .poseDetection,
-					fractionCompleted: progress * Self.poseDetectionWeight
-				)
+					fractionCompleted: progress * Self.poseDetectionWeight,
+				),
 			)
 		}
 		let tracker = ShotTracker(sourceSize: sourceSize, aspectRatio: configuration.aspectRatio)
@@ -136,8 +136,8 @@ public actor VideoReframer {
 				.init(
 					stage: .shotTracking,
 					fractionCompleted: Self.poseDetectionWeight
-						+ (Double(index + 1) / Double(trackingCount)) * Self.shotTrackingWeight
-				)
+						+ (Double(index + 1) / Double(trackingCount)) * Self.shotTrackingWeight,
+				),
 			)
 		}
 
@@ -148,14 +148,14 @@ public actor VideoReframer {
 		return ReframingAnalysis(
 			sourceSize: sourceSize,
 			renderSize: configuration.renderSize,
-			shotStates: shotStates
+			shotStates: shotStates,
 		)
 	}
 
 	public func export(
 		inputURL: URL,
 		outputURL: URL,
-		progressHandler: ProgressHandler? = nil
+		progressHandler: ProgressHandler? = nil,
 	) async throws {
 		let asset = AVURLAsset(url: inputURL)
 		let analysis = try await analyze(asset: asset, progressHandler: progressHandler)
@@ -166,7 +166,7 @@ public actor VideoReframer {
 		asset: AVAsset,
 		analysis: ReframingAnalysis,
 		outputURL: URL,
-		progressHandler: ProgressHandler? = nil
+		progressHandler: ProgressHandler? = nil,
 	) async throws {
 		let videoComposition = try await self.makeVideoComposition(asset: asset, analysis: analysis)
 
@@ -232,15 +232,15 @@ public actor VideoReframer {
 			&layerConfiguration,
 			shotStates: analysis.shotStates,
 			sourceSize: analysis.sourceSize,
-			renderSize: analysis.renderSize
+			renderSize: analysis.renderSize,
 		)
 
-		let instruction = AVVideoCompositionInstruction(
+		let instruction = try await AVVideoCompositionInstruction(
 			configuration: .init(
 				backgroundColor: CGColor(gray: 0, alpha: 1),
 				layerInstructions: [AVVideoCompositionLayerInstruction(configuration: layerConfiguration)],
-				timeRange: CMTimeRange(start: .zero, duration: try await asset.load(.duration))
-			)
+				timeRange: CMTimeRange(start: .zero, duration: asset.load(.duration)),
+			),
 		)
 
 		var configuration = try await AVVideoComposition.Configuration(for: asset)
@@ -268,24 +268,24 @@ public actor VideoReframer {
 		let outputAspect = analysis.renderSize.width / max(analysis.renderSize.height, 1)
 		let originalPanelSize = CGSize(
 			width: (comparisonHeight * originalAspect).rounded(),
-			height: comparisonHeight.rounded()
+			height: comparisonHeight.rounded(),
 		)
 		let outputPanelSize = CGSize(
 			width: (comparisonHeight * outputAspect).rounded(),
-			height: comparisonHeight.rounded()
+			height: comparisonHeight.rounded(),
 		)
 		let comparisonRenderSize = CGSize(
 			width: originalPanelSize.width + outputPanelSize.width,
-			height: comparisonHeight.rounded()
+			height: comparisonHeight.rounded(),
 		)
 
 		var leftLayerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: leftTrack)
 		leftLayerConfiguration.setTransform(
 			Self.aspectFittedTransform(
 				sourceSize: analysis.sourceSize,
-				destinationRect: CGRect(origin: .zero, size: originalPanelSize)
+				destinationRect: CGRect(origin: .zero, size: originalPanelSize),
 			),
-			at: .zero
+			at: .zero,
 		)
 
 		var rightLayerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: rightTrack)
@@ -294,23 +294,23 @@ public actor VideoReframer {
 			shotStates: analysis.shotStates,
 			sourceSize: analysis.sourceSize,
 			renderSize: outputPanelSize,
-			xOffset: originalPanelSize.width
+			xOffset: originalPanelSize.width,
 		)
 		Self.configureCropRectangles(
 			&rightLayerConfiguration,
 			shotStates: analysis.shotStates,
-			sourceSize: analysis.sourceSize
+			sourceSize: analysis.sourceSize,
 		)
 
-		let instruction = AVVideoCompositionInstruction(
+		let instruction = try await AVVideoCompositionInstruction(
 			configuration: .init(
 				backgroundColor: CGColor(gray: 0, alpha: 1),
 				layerInstructions: [
 					AVVideoCompositionLayerInstruction(configuration: rightLayerConfiguration),
 					AVVideoCompositionLayerInstruction(configuration: leftLayerConfiguration),
 				],
-				timeRange: CMTimeRange(start: .zero, duration: try await asset.load(.duration))
-			)
+				timeRange: CMTimeRange(start: .zero, duration: asset.load(.duration)),
+			),
 		)
 
 		var configuration = try await AVVideoComposition.Configuration(for: asset)
@@ -337,13 +337,13 @@ public actor VideoReframer {
 		sourceSize: CGSize,
 		renderSize: CGSize,
 		xOffset: CGFloat = 0,
-		yOffset: CGFloat = 0
+		yOffset: CGFloat = 0,
 	) {
 		guard let firstState = shotStates.first else { return }
 
 		configuration.setTransform(
 			transform(for: firstState.value.bounds, sourceSize: sourceSize, renderSize: renderSize, xOffset: xOffset, yOffset: yOffset),
-			at: .zero
+			at: .zero,
 		)
 
 		for (from, to) in zip(shotStates, shotStates.dropFirst()) {
@@ -358,16 +358,16 @@ public actor VideoReframer {
 						sourceSize: sourceSize,
 						renderSize: renderSize,
 						xOffset: xOffset,
-						yOffset: yOffset
+						yOffset: yOffset,
 					),
 					end: transform(
 						for: to.value.bounds,
 						sourceSize: sourceSize,
 						renderSize: renderSize,
 						xOffset: xOffset,
-						yOffset: yOffset
-					)
-				)
+						yOffset: yOffset,
+					),
+				),
 			)
 		}
 	}
@@ -376,7 +376,7 @@ public actor VideoReframer {
 	private static func configureCropRectangles(
 		_ configuration: inout AVVideoCompositionLayerInstruction.Configuration,
 		shotStates: [FrameData<ShotState>],
-		sourceSize: CGSize
+		sourceSize: CGSize,
 	) {
 		guard let firstState = shotStates.first else { return }
 
@@ -390,8 +390,8 @@ public actor VideoReframer {
 				.init(
 					timeRange: timeRange,
 					start: videoSpaceRect(for: from.value.bounds, sourceSize: sourceSize),
-					end: videoSpaceRect(for: to.value.bounds, sourceSize: sourceSize)
-				)
+					end: videoSpaceRect(for: to.value.bounds, sourceSize: sourceSize),
+				),
 			)
 		}
 	}
@@ -401,7 +401,7 @@ public actor VideoReframer {
 		sourceSize: CGSize,
 		renderSize: CGSize,
 		xOffset: CGFloat = 0,
-		yOffset: CGFloat = 0
+		yOffset: CGFloat = 0,
 	) -> CGAffineTransform {
 		let videoRect = videoSpaceRect(for: bounds, sourceSize: sourceSize)
 		let scaleX = renderSize.width / max(videoRect.width, 1)
@@ -412,7 +412,7 @@ public actor VideoReframer {
 			c: 0,
 			d: scaleY,
 			tx: xOffset - videoRect.minX * scaleX,
-			ty: yOffset - videoRect.minY * scaleY
+			ty: yOffset - videoRect.minY * scaleY,
 		)
 	}
 
@@ -421,7 +421,7 @@ public actor VideoReframer {
 			x: bounds.minX,
 			y: sourceSize.height - bounds.maxY,
 			width: bounds.width,
-			height: bounds.height
+			height: bounds.height,
 		)
 	}
 
@@ -434,7 +434,7 @@ public actor VideoReframer {
 			c: 0,
 			d: scale,
 			tx: destinationRect.minX + (destinationRect.width - scaledSize.width) / 2,
-			ty: destinationRect.minY + (destinationRect.height - scaledSize.height) / 2
+			ty: destinationRect.minY + (destinationRect.height - scaledSize.height) / 2,
 		)
 	}
 
@@ -443,7 +443,7 @@ public actor VideoReframer {
 		let translated = cropped.transformed(by: .init(translationX: -cropRect.minX, y: -cropRect.minY))
 		let scaleTransform = CGAffineTransform(
 			scaleX: renderSize.width / cropRect.width,
-			y: renderSize.height / cropRect.height
+			y: renderSize.height / cropRect.height,
 		)
 		return translated.transformed(by: scaleTransform)
 	}
@@ -497,7 +497,7 @@ private extension CGRect {
 			x: origin.x + (other.origin.x - origin.x) * progress,
 			y: origin.y + (other.origin.y - origin.y) * progress,
 			width: size.width + (other.size.width - size.width) * progress,
-			height: size.height + (other.size.height - size.height) * progress
+			height: size.height + (other.size.height - size.height) * progress,
 		)
 	}
 }

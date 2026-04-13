@@ -89,19 +89,19 @@ public actor ShotTracker {
 		let deadZoneHalfWidth = targetOutput.width * horizontalDeadZoneHalfWidthFactor
 		let horizontalOverflow = Self.deadZoneOverflow(
 			offset: subjectCenter.x - currentTargetX,
-			halfWidth: deadZoneHalfWidth
+			halfWidth: deadZoneHalfWidth,
 		)
 
 		return CGPoint(
 			x: currentBounds.origin.x + horizontalOverflow,
-			y: subjectCenter.y - targetOutput.height * Self.targetAnchor.y
+			y: subjectCenter.y - targetOutput.height * Self.targetAnchor.y,
 		)
 	}
 
 	private func clampedOrigin(_ origin: CGPoint) -> CGPoint {
 		CGPoint(
 			x: min(max(origin.x, 0), sourceSize.width - targetOutput.width),
-			y: min(max(origin.y, 0), sourceSize.height - targetOutput.height)
+			y: min(max(origin.y, 0), sourceSize.height - targetOutput.height),
 		)
 	}
 
@@ -114,7 +114,7 @@ public actor ShotTracker {
 					target: nil,
 					deltaTime: compositionTime.seconds - currentTime.seconds,
 					springStiffness: springStiffness,
-					dampingCoefficient: dampingCoefficient
+					dampingCoefficient: dampingCoefficient,
 				)
 				currentBounds.origin = clampedOrigin(step.position)
 				currentSpeed = step.velocity
@@ -153,7 +153,7 @@ public actor ShotTracker {
 				target: desiredOrigin,
 				deltaTime: compositionTime.seconds - currentTime.seconds,
 				springStiffness: springStiffness,
-				dampingCoefficient: dampingCoefficient
+				dampingCoefficient: dampingCoefficient,
 			)
 			currentBounds.origin = clampedOrigin(step.position)
 			currentSpeed = step.velocity
@@ -178,7 +178,7 @@ public actor ShotTracker {
 		target: CGPoint?,
 		deltaTime: Double,
 		springStiffness: CGFloat,
-		dampingCoefficient: CGFloat
+		dampingCoefficient: CGFloat,
 	) -> (position: CGPoint, velocity: CGPoint) {
 		guard deltaTime > 0 else {
 			return (position, velocity)
@@ -187,7 +187,7 @@ public actor ShotTracker {
 		let deltaTime = CGFloat(deltaTime)
 		var acceleration = CGPoint(
 			x: -velocity.x * dampingCoefficient,
-			y: -velocity.y * dampingCoefficient
+			y: -velocity.y * dampingCoefficient,
 		)
 
 		if let target {

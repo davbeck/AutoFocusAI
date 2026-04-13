@@ -1,7 +1,7 @@
 import AVFoundation
 import CoreGraphics
-import ImageIO
 import Foundation
+import ImageIO
 import Vision
 
 public struct VideoProcessingConfiguration: Sendable {
@@ -20,7 +20,7 @@ public struct VideoProcessingConfiguration: Sendable {
 	public init(
 		maximumFramesPerSecond: Double = 10,
 		maximumDetectionLongEdge: CGFloat = 720,
-		maximumConcurrentDetectionRequests: Int = 2
+		maximumConcurrentDetectionRequests: Int = 2,
 	) {
 		self.maximumFramesPerSecond = maximumFramesPerSecond
 		self.maximumDetectionLongEdge = maximumDetectionLongEdge
@@ -58,7 +58,7 @@ public struct VideoProcessor {
 		let (nominalFrameRate, naturalSize, preferredTransform) = try await track.load(
 			.nominalFrameRate,
 			.naturalSize,
-			.preferredTransform
+			.preferredTransform,
 		)
 		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
 
@@ -68,13 +68,13 @@ public struct VideoProcessor {
 		)
 		let detectionSize = Self.detectionSize(
 			for: sourceSize,
-			maximumLongEdge: configuration.maximumDetectionLongEdge
+			maximumLongEdge: configuration.maximumDetectionLongEdge,
 		)
 		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
 		let (reader, sampleBufferOutput) = try Self.makeSampleBufferOutput(
 			asset: asset,
 			track: track,
-			outputSize: detectionSize
+			outputSize: detectionSize,
 		)
 		let orientation = Self.imageOrientation(for: preferredTransform)
 		// Keep a small amount of overlap without flooding the system with Vision
@@ -82,7 +82,7 @@ public struct VideoProcessor {
 		// reader path and a wider pipeline of `3`.
 		let maximumConcurrentDetectionRequests = max(configuration.maximumConcurrentDetectionRequests, 1)
 
-		var frames = Array<FrameData<[HumanBodyPoseObservation]>?>(repeating: nil, count: requestedTimes.count)
+		var frames = [FrameData<[HumanBodyPoseObservation]>?](repeating: nil, count: requestedTimes.count)
 
 		if let progressHandler {
 			await progressHandler(0)
@@ -103,8 +103,8 @@ public struct VideoProcessor {
 			}
 
 			while reader.status == .reading,
-				nextRequestedTimeIndex < requestedTimes.count,
-				let sampleBuffer = sampleBufferOutput.copyNextSampleBuffer()
+			      nextRequestedTimeIndex < requestedTimes.count,
+			      let sampleBuffer = sampleBufferOutput.copyNextSampleBuffer()
 			{
 				let actualTime = sampleBuffer.presentationTimeStamp
 				guard actualTime >= requestedTimes[nextRequestedTimeIndex] else { continue }
@@ -112,7 +112,7 @@ public struct VideoProcessor {
 				let input = DetectionInput(
 					index: nextRequestedTimeIndex,
 					presentationTime: actualTime,
-					sampleBuffer: sampleBuffer
+					sampleBuffer: sampleBuffer,
 				)
 				group.addTask {
 					try await Self.detectPoses(in: input, orientation: orientation)
@@ -123,7 +123,7 @@ public struct VideoProcessor {
 				// Bound the queue so decode can stay slightly ahead of Vision without
 				// building unnecessary buffer backlog or increasing CPU contention.
 				if inFlightTaskCount >= maximumConcurrentDetectionRequests,
-					let result = try await group.next()
+				   let result = try await group.next()
 				{
 					await store(result)
 					inFlightTaskCount -= 1
@@ -139,7 +139,7 @@ public struct VideoProcessor {
 			throw Error.unableToStartReading(reader.error)
 		}
 
-		return frames.compactMap { $0 }
+		return frames.compactMap(\.self)
 	}
 
 	public static func sampleInterval(forNominalFrameRate nominalFrameRate: Float, maximumFramesPerSecond: Double) -> CMTime {
@@ -165,7 +165,7 @@ public struct VideoProcessor {
 		let scale = maximumLongEdge / longEdge
 		return CGSize(
 			width: max(1, (sourceSize.width * scale).rounded()),
-			height: max(1, (sourceSize.height * scale).rounded())
+			height: max(1, (sourceSize.height * scale).rounded()),
 		)
 	}
 
@@ -191,7 +191,7 @@ public struct VideoProcessor {
 	private static func makeSampleBufferOutput(
 		asset: AVAsset,
 		track: AVAssetTrack,
-		outputSize: CGSize
+		outputSize: CGSize,
 	) throws -> (reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
 		let outputSettings: [String: Any] = [
 			kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
@@ -227,7 +227,7 @@ public struct VideoProcessor {
 
 	private static func detectPoses(
 		in input: DetectionInput,
-		orientation: CGImagePropertyOrientation
+		orientation: CGImagePropertyOrientation,
 	) async throws -> DetectionResult {
 		// Vision request values are cheap to create and this keeps each task fully
 		// isolated, avoiding shared mutable request state inside the task group.
@@ -238,7 +238,7 @@ public struct VideoProcessor {
 		let poses = try await handler.perform(request)
 		return (
 			input.index,
-			FrameData(presentationTime: input.presentationTime, value: poses)
+			FrameData(presentationTime: input.presentationTime, value: poses),
 		)
 	}
 }

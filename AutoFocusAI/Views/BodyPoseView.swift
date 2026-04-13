@@ -26,7 +26,7 @@ struct JointShape: Shape {
 			radius: 3,
 			startAngle: .degrees(0),
 			endAngle: .degrees(360),
-			clockwise: true
+			clockwise: true,
 		)
 
 		return path
