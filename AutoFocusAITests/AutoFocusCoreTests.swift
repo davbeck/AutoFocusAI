@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreMedia
+import ImageIO
 import Testing
 @testable import AutoFocusCore
 
@@ -75,6 +76,23 @@ struct AutoFocusCoreTests {
 
 		#expect(size.width == 640)
 		#expect(size.height == 360)
+	}
+
+	@Test
+	func imageOrientationMatchesTrackTransform() {
+		#expect(VideoProcessor.imageOrientation(for: .identity) == .up)
+		#expect(
+			VideoProcessor.imageOrientation(for: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 0, ty: 0))
+				== .down
+		)
+		#expect(
+			VideoProcessor.imageOrientation(for: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0))
+				== .right
+		)
+		#expect(
+			VideoProcessor.imageOrientation(for: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0))
+				== .left
+		)
 	}
 
 	@Test

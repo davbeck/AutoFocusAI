@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreGraphics
+import ImageIO
 import Foundation
 import Vision
 
@@ -22,6 +23,7 @@ public struct VideoProcessingConfiguration: Sendable {
 public struct VideoProcessor {
 	public enum Error: Swift.Error {
 		case noVideoTrackFound
+		case unableToStartReading(Swift.Error?)
 	}
 
 	public typealias ProgressHandler = @Sendable (Double) async -> Void
@@ -37,24 +39,28 @@ public struct VideoProcessor {
 	public func process(progressHandler: ProgressHandler? = nil) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Error.noVideoTrackFound }
 		let duration = try await asset.load(.duration)
-		let nominalFrameRate = try await track.load(.nominalFrameRate)
-		let sourceSize = try await Self.sourceSize(for: track)
-
-		let generator = AVAssetImageGenerator(asset: asset)
-		generator.appliesPreferredTrackTransform = true
+		let (nominalFrameRate, naturalSize, preferredTransform) = try await track.load(
+			.nominalFrameRate,
+			.naturalSize,
+			.preferredTransform
+		)
+		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
 
 		let sampleInterval = Self.sampleInterval(
 			forNominalFrameRate: nominalFrameRate,
 			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
 		)
-		let frameTimeTolerance = Self.frameTimeTolerance(for: sampleInterval)
-		generator.requestedTimeToleranceBefore = frameTimeTolerance
-		generator.requestedTimeToleranceAfter = frameTimeTolerance
-		generator.maximumSize = Self.detectionSize(
+		let detectionSize = Self.detectionSize(
 			for: sourceSize,
 			maximumLongEdge: configuration.maximumDetectionLongEdge
 		)
 		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
+		let (reader, sampleBufferOutput) = try Self.makeSampleBufferOutput(
+			asset: asset,
+			track: track,
+			outputSize: detectionSize
+		)
+		let orientation = Self.imageOrientation(for: preferredTransform)
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
 		frames.reserveCapacity(requestedTimes.count)
@@ -65,16 +71,26 @@ public struct VideoProcessor {
 			await progressHandler(0)
 		}
 
-		for (index, requestedTime) in requestedTimes.enumerated() {
-			let (image, actualTime) = try await generator.image(at: requestedTime)
+		var nextRequestedTimeIndex = 0
+		while reader.status == .reading,
+			nextRequestedTimeIndex < requestedTimes.count,
+			let sampleBuffer = sampleBufferOutput.copyNextSampleBuffer()
+		{
+			let actualTime = sampleBuffer.presentationTimeStamp
+			guard actualTime >= requestedTimes[nextRequestedTimeIndex] else { continue }
 
-			let handler = ImageRequestHandler(image)
+			let handler = ImageRequestHandler(sampleBuffer, orientation: orientation)
 			let poses = try await handler.perform(request)
 
 			frames.append(FrameData(presentationTime: actualTime, value: poses))
 			if let progressHandler {
-				await progressHandler(Double(index + 1) / Double(requestedTimes.count))
+				await progressHandler(Double(nextRequestedTimeIndex + 1) / Double(requestedTimes.count))
 			}
+			nextRequestedTimeIndex += 1
+		}
+
+		if reader.status == .failed {
+			throw Error.unableToStartReading(reader.error)
 		}
 
 		return frames
@@ -121,10 +137,46 @@ public struct VideoProcessor {
 		return times
 	}
 
-	private static func sourceSize(for track: AVAssetTrack) async throws -> CGSize {
-		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
+	private static func sourceSize(forNaturalSize naturalSize: CGSize, preferredTransform: CGAffineTransform) -> CGSize {
 		let rect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
 		return CGSize(width: abs(rect.width), height: abs(rect.height))
+	}
+
+	private static func makeSampleBufferOutput(
+		asset: AVAsset,
+		track: AVAssetTrack,
+		outputSize: CGSize
+	) throws -> (reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
+		let outputSettings: [String: Any] = [
+			kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+			kCVPixelBufferWidthKey as String: max(1, Int(outputSize.width.rounded())),
+			kCVPixelBufferHeightKey as String: max(1, Int(outputSize.height.rounded())),
+		]
+
+		let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
+		output.alwaysCopiesSampleData = false
+
+		let reader = try AVAssetReader(asset: asset)
+		guard reader.canAdd(output) else { throw Error.unableToStartReading(reader.error) }
+		reader.add(output)
+
+		guard reader.startReading() else { throw Error.unableToStartReading(reader.error) }
+		return (reader, output)
+	}
+
+	static func imageOrientation(for preferredTransform: CGAffineTransform) -> CGImagePropertyOrientation {
+		switch (preferredTransform.a, preferredTransform.b, preferredTransform.c, preferredTransform.d) {
+		case (1, 0, 0, 1):
+			return .up
+		case (-1, 0, 0, -1):
+			return .down
+		case (0, 1, -1, 0):
+			return .right
+		case (0, -1, 1, 0):
+			return .left
+		default:
+			return .up
+		}
 	}
 }
 
