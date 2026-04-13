@@ -148,12 +148,6 @@ public struct VideoProcessor {
 		return CMTime(seconds: 1 / frameRate, preferredTimescale: 600)
 	}
 
-	/// Returns the tolerated distance from each requested timestamp when decoding analysis frames.
-	public static func frameTimeTolerance(for sampleInterval: CMTime) -> CMTime {
-		guard sampleInterval > .zero else { return .zero }
-		return CMTimeMultiplyByFloat64(sampleInterval, multiplier: 0.5)
-	}
-
 	/// Returns the decode size used for Vision while preserving aspect ratio and avoiding upscaling.
 	public static func detectionSize(for sourceSize: CGSize, maximumLongEdge: CGFloat) -> CGSize {
 		guard sourceSize.width > 0, sourceSize.height > 0 else { return .zero }

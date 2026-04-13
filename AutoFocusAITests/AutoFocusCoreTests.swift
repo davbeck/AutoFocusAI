@@ -48,15 +48,6 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func frameTimeToleranceUsesHalfTheSampleInterval() {
-		let tolerance = VideoProcessor.frameTimeTolerance(
-			for: CMTime(seconds: 0.1, preferredTimescale: 600),
-		)
-
-		#expect(tolerance.seconds == 0.05)
-	}
-
-	@Test
 	func detectionSizeDownscalesLongEdgePreservingAspectRatio() {
 		let size = VideoProcessor.detectionSize(
 			for: CGSize(width: 1920, height: 1080),
