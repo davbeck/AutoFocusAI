@@ -58,6 +58,8 @@ public struct VideoProcessor {
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
 		frames.reserveCapacity(requestedTimes.count)
+		var request = DetectHumanBodyPoseRequest()
+		request.detectsHands = false
 
 		if let progressHandler {
 			await progressHandler(0)
@@ -66,8 +68,6 @@ public struct VideoProcessor {
 		for (index, requestedTime) in requestedTimes.enumerated() {
 			let (image, actualTime) = try await generator.image(at: requestedTime)
 
-			var request = DetectHumanBodyPoseRequest()
-			request.detectsHands = false
 			let handler = ImageRequestHandler(image)
 			let poses = try await handler.perform(request)
 
