@@ -16,11 +16,11 @@ struct VideoView: View {
 						.tag(VideoCoordinator.PreviewMode.original)
 
 					Text("Output")
-						.selectionDisabled(!coordinator.hasComparisonPreview)
+						.selectionDisabled(!coordinator.hasPreviewAnalysis)
 						.tag(VideoCoordinator.PreviewMode.output)
 
 					Text("Both")
-						.selectionDisabled(!coordinator.hasComparisonPreview)
+						.selectionDisabled(!coordinator.hasPreviewAnalysis)
 						.tag(VideoCoordinator.PreviewMode.comparison)
 				}
 				.pickerStyle(.segmented)

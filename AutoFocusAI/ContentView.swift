@@ -69,7 +69,7 @@ struct ContentView: View {
 						await coordinator.export(to: outputURL)
 					}
 				}
-				.disabled(coordinator?.hasComparisonPreview != true || coordinator?.isProcessing == true)
+				.disabled(coordinator?.hasPreviewAnalysis != true || coordinator?.isProcessing == true)
 			}
 		}
 		.task {

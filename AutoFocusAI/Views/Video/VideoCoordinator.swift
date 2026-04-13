@@ -20,12 +20,15 @@ final class VideoCoordinator {
 	private var outputItem: AVPlayerItem?
 	private var comparisonItem: AVPlayerItem?
 	private var analysis: ReframingAnalysis?
+	private var analysisTask: Task<ReframingAnalysis, Error>?
+	private var outputItemTask: Task<Void, Never>?
+	private var comparisonItemTask: Task<Void, Never>?
 
 	let player: AVPlayer
 
 	var isProcessing = false
 	var processingProgress: ReframingProgress?
-	var hasComparisonPreview = false
+	var hasPreviewAnalysis = false
 	var errorText: String?
 	var previewMode: PreviewMode = .original {
 		didSet {
@@ -49,7 +52,7 @@ final class VideoCoordinator {
 		self.player = player
 		self.installLoopObserver(for: playerItem)
 
-		Task { await self.loadComparisonPreview() }
+		startAnalysisIfNeeded()
 	}
 
 	func play() {
@@ -68,18 +71,14 @@ final class VideoCoordinator {
 		guard !isProcessing else { return }
 
 		isProcessing = true
-		processingProgress = .init(stage: .exporting, fractionCompleted: 0)
 		defer {
 			isProcessing = false
 			processingProgress = nil
 		}
 
 		do {
-			let analysis = try await loadAnalysis { [weak self] progress in
-				await MainActor.run {
-					self?.processingProgress = progress
-				}
-			}
+			let analysis = try await loadAnalysis()
+			processingProgress = .init(stage: .exporting, fractionCompleted: 0)
 
 			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL) { [weak self] progress in
 				await MainActor.run {
@@ -108,57 +107,123 @@ final class VideoCoordinator {
 		}
 	}
 
-	private func loadComparisonPreview() async {
-		isProcessing = true
-		processingProgress = .init(stage: .poseDetection, fractionCompleted: 0)
-		defer {
-			isProcessing = false
-			processingProgress = nil
+	private func startAnalysisIfNeeded() {
+		guard analysis == nil, analysisTask == nil else {
+			hasPreviewAnalysis = analysis != nil
+			return
 		}
 
-		do {
-			let analysis = try await loadAnalysis { [weak self] progress in
+		isProcessing = true
+		processingProgress = .init(stage: .poseDetection, fractionCompleted: 0)
+
+		let task = Task<ReframingAnalysis, Error> { [asset, reframer] in
+			try await reframer.analyze(asset: asset) { [weak self] progress in
 				await MainActor.run {
 					self?.processingProgress = progress
 				}
 			}
-			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.95)
-			async let outputVideoComposition = reframer.makeOutputVideoComposition(asset: asset, analysis: analysis)
-			let comparisonAsset = try await VideoReframer.makeComparisonAsset(from: asset)
-			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.97)
-			async let comparisonVideoComposition = reframer.makeComparisonVideoComposition(asset: comparisonAsset, analysis: analysis)
+		}
+		analysisTask = task
 
-			let outputItem = AVPlayerItem(asset: asset)
-			outputItem.videoComposition = try await outputVideoComposition
-			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.985)
-			self.outputItem = outputItem
+		Task { @MainActor [weak self] in
+			guard let self else { return }
 
-			let comparisonItem = AVPlayerItem(asset: comparisonAsset)
-			comparisonItem.videoComposition = try await comparisonVideoComposition
-			processingProgress = .init(stage: .buildingPreview, fractionCompleted: 1)
-			self.comparisonItem = comparisonItem
+			do {
+				let analysis = try await task.value
+				self.analysis = analysis
+				self.hasPreviewAnalysis = true
+				self.errorText = nil
+			} catch {
+				self.errorText = error.localizedDescription
+			}
 
-			hasComparisonPreview = true
-			errorText = nil
-			updatePreviewMode()
-		} catch {
-			errorText = error.localizedDescription
+			self.analysisTask = nil
+			self.finishProcessingIfIdle()
 		}
 	}
 
-	private func loadAnalysis(
-		progressHandler: VideoReframer.ProgressHandler? = nil,
-	) async throws -> ReframingAnalysis {
+	private func finishProcessingIfIdle() {
+		guard analysisTask == nil, outputItemTask == nil, comparisonItemTask == nil else { return }
+		isProcessing = false
+		processingProgress = nil
+	}
+
+	private func loadAnalysis() async throws -> ReframingAnalysis {
 		if let analysis {
 			return analysis
 		}
 
-		let analysis = try await reframer.analyze(asset: asset, progressHandler: progressHandler)
-		self.analysis = analysis
-		return analysis
+		startAnalysisIfNeeded()
+		guard let analysisTask else {
+			fatalError("Analysis task should exist when analysis is unavailable.")
+		}
+		return try await analysisTask.value
+	}
+
+	private func preparePreviewItemIfNeeded(for mode: PreviewMode) {
+		switch mode {
+		case .original:
+			return
+		case .output:
+			guard outputItem == nil, outputItemTask == nil else { return }
+			outputItemTask = Task { @MainActor [weak self] in
+				guard let self else { return }
+				defer {
+					self.outputItemTask = nil
+					self.finishProcessingIfIdle()
+				}
+
+				do {
+					let analysis = try await self.loadAnalysis()
+					self.isProcessing = true
+					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.95)
+
+					let outputItem = AVPlayerItem(asset: self.asset)
+					outputItem.videoComposition = try await self.reframer.makeOutputVideoComposition(asset: self.asset, analysis: analysis)
+					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 1)
+					self.outputItem = outputItem
+					self.errorText = nil
+					if self.previewMode == .output {
+						self.updatePreviewMode()
+					}
+				} catch {
+					self.errorText = error.localizedDescription
+				}
+			}
+		case .comparison:
+			guard comparisonItem == nil, comparisonItemTask == nil else { return }
+			comparisonItemTask = Task { @MainActor [weak self] in
+				guard let self else { return }
+				defer {
+					self.comparisonItemTask = nil
+					self.finishProcessingIfIdle()
+				}
+
+				do {
+					let analysis = try await self.loadAnalysis()
+					self.isProcessing = true
+					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.95)
+
+					let comparisonAsset = try await VideoReframer.makeComparisonAsset(from: self.asset)
+					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.97)
+					let comparisonItem = AVPlayerItem(asset: comparisonAsset)
+					comparisonItem.videoComposition = try await self.reframer.makeComparisonVideoComposition(asset: comparisonAsset, analysis: analysis)
+					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 1)
+					self.comparisonItem = comparisonItem
+					self.errorText = nil
+					if self.previewMode == .comparison {
+						self.updatePreviewMode()
+					}
+				} catch {
+					self.errorText = error.localizedDescription
+				}
+			}
+		}
 	}
 
 	private func updatePreviewMode() {
+		preparePreviewItemIfNeeded(for: previewMode)
+
 		let item: AVPlayerItem = switch previewMode {
 		case .original:
 			originalItem

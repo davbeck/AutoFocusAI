@@ -49,6 +49,35 @@ public struct ReframingAnalysis: Sendable {
 			return previousFrame.value.bounds.interpolated(to: nextFrame.value.bounds, progress: progress)
 		}
 	}
+
+	func previewAnalysis(maximumShotStateCount: Int) -> ReframingAnalysis {
+		guard maximumShotStateCount > 1, shotStates.count > maximumShotStateCount else {
+			return self
+		}
+
+		// Long sermon recordings can produce tens of thousands of crop samples. The
+		// player preview only needs a representative subset because the video
+		// composition already interpolates between adjacent bounds with ramps.
+		let lastSourceIndex = shotStates.index(before: shotStates.endIndex)
+		var reducedShotStates: [FrameData<ShotState>] = []
+		reducedShotStates.reserveCapacity(maximumShotStateCount)
+
+		var previousSourceIndex: Int?
+		for reducedIndex in 0..<maximumShotStateCount {
+			let progress = Double(reducedIndex) / Double(maximumShotStateCount - 1)
+			let sourceIndex = Int((Double(lastSourceIndex) * progress).rounded())
+			guard previousSourceIndex != sourceIndex else { continue }
+
+			reducedShotStates.append(shotStates[sourceIndex])
+			previousSourceIndex = sourceIndex
+		}
+
+		return ReframingAnalysis(
+			sourceSize: sourceSize,
+			renderSize: renderSize,
+			shotStates: reducedShotStates,
+		)
+	}
 }
 
 public enum ReframingProgressStage: String, Sendable {
@@ -95,6 +124,9 @@ public actor VideoReframer {
 
 	private static let poseDetectionWeight = 0.7
 	private static let shotTrackingWeight = 0.25
+	// Keep preview ramp counts bounded on very long timelines without changing
+	// export quality, which still uses the full analysis.
+	private static let maximumPreviewShotStateCount = 6000
 
 	public let configuration: ReframingConfiguration
 
@@ -186,11 +218,17 @@ public actor VideoReframer {
 	}
 
 	public func makeOutputVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
-		try await makeVideoComposition(asset: asset, analysis: analysis)
+		try await makeVideoComposition(
+			asset: asset,
+			analysis: analysis.previewAnalysis(maximumShotStateCount: Self.maximumPreviewShotStateCount),
+		)
 	}
 
 	public func makeComparisonVideoComposition(asset: AVAsset, analysis: ReframingAnalysis) async throws -> AVVideoComposition {
-		try await buildComparisonVideoComposition(asset: asset, analysis: analysis)
+		try await buildComparisonVideoComposition(
+			asset: asset,
+			analysis: analysis.previewAnalysis(maximumShotStateCount: Self.maximumPreviewShotStateCount),
+		)
 	}
 
 	public static func makeComparisonAsset(from asset: AVAsset) async throws -> AVAsset {

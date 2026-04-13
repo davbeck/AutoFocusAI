@@ -6,13 +6,10 @@ public struct ShotState: Sendable {
 	public var target: CGRect
 	public var subjectCenter: CGPoint?
 
-	public var pose: HumanBodyPoseObservation?
-
-	public init(bounds: CGRect, target: CGRect, subjectCenter: CGPoint?, pose: HumanBodyPoseObservation?) {
+	public init(bounds: CGRect, target: CGRect, subjectCenter: CGPoint?) {
 		self.bounds = bounds
 		self.target = target
 		self.subjectCenter = subjectCenter
-		self.pose = pose
 	}
 }
 
@@ -125,7 +122,6 @@ public actor ShotTracker {
 				bounds: currentBounds,
 				target: self.target(for: currentBounds),
 				subjectCenter: nil,
-				pose: nil,
 			)
 		}
 
@@ -168,7 +164,6 @@ public actor ShotTracker {
 			bounds: currentBounds,
 			target: self.target(for: currentBounds),
 			subjectCenter: subjectCenter,
-			pose: pose,
 		)
 	}
 

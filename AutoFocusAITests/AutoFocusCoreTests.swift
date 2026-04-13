@@ -149,7 +149,6 @@ struct AutoFocusCoreTests {
 						bounds: CGRect(x: 100, y: 200, width: 600, height: 1080),
 						target: .zero,
 						subjectCenter: nil,
-						pose: nil,
 					),
 				),
 				FrameData(
@@ -158,7 +157,6 @@ struct AutoFocusCoreTests {
 						bounds: CGRect(x: 220, y: 260, width: 600, height: 1080),
 						target: .zero,
 						subjectCenter: nil,
-						pose: nil,
 					),
 				),
 			],
@@ -170,5 +168,59 @@ struct AutoFocusCoreTests {
 		#expect(bounds?.origin.y == 215)
 		#expect(bounds?.width == 600)
 		#expect(bounds?.height == 1080)
+	}
+
+	@Test
+	func previewAnalysisLeavesShortTimelinesUnchanged() {
+		let shotStates = [
+			FrameData(
+				presentationTime: CMTime(seconds: 0, preferredTimescale: 600),
+				value: ShotState(bounds: CGRect(x: 10, y: 0, width: 600, height: 1080), target: .zero, subjectCenter: nil),
+			),
+			FrameData(
+				presentationTime: CMTime(seconds: 1, preferredTimescale: 600),
+				value: ShotState(bounds: CGRect(x: 20, y: 0, width: 600, height: 1080), target: .zero, subjectCenter: nil),
+			),
+			FrameData(
+				presentationTime: CMTime(seconds: 2, preferredTimescale: 600),
+				value: ShotState(bounds: CGRect(x: 30, y: 0, width: 600, height: 1080), target: .zero, subjectCenter: nil),
+			),
+		]
+		let analysis = ReframingAnalysis(
+			sourceSize: CGSize(width: 1920, height: 1080),
+			renderSize: CGSize(width: 1080, height: 1920),
+			shotStates: shotStates,
+		)
+
+		let previewAnalysis = analysis.previewAnalysis(maximumShotStateCount: 10)
+
+		#expect(previewAnalysis.shotStates.count == shotStates.count)
+		#expect(previewAnalysis.shotStates.map(\.presentationTime) == shotStates.map(\.presentationTime))
+	}
+
+	@Test
+	func previewAnalysisCapsLongTimelinesPreservingEndpoints() {
+		let shotStates = (0..<10).map { index in
+			FrameData(
+				presentationTime: CMTime(seconds: Double(index), preferredTimescale: 600),
+				value: ShotState(
+					bounds: CGRect(x: CGFloat(index * 10), y: 0, width: 600, height: 1080),
+					target: .zero,
+					subjectCenter: nil,
+				),
+			)
+		}
+		let analysis = ReframingAnalysis(
+			sourceSize: CGSize(width: 1920, height: 1080),
+			renderSize: CGSize(width: 1080, height: 1920),
+			shotStates: shotStates,
+		)
+
+		let previewAnalysis = analysis.previewAnalysis(maximumShotStateCount: 4)
+
+		#expect(previewAnalysis.shotStates.count == 4)
+		#expect(previewAnalysis.shotStates.first?.presentationTime == shotStates.first?.presentationTime)
+		#expect(previewAnalysis.shotStates.last?.presentationTime == shotStates.last?.presentationTime)
+		#expect(previewAnalysis.shotStates.map(\.presentationTime.seconds) == [0, 3, 6, 9])
 	}
 }

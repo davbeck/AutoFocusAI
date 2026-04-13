@@ -52,11 +52,6 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 			if let first = analysis.shotStates.first {
 				print("cropSize:   \(Int(first.value.bounds.width)) x \(Int(first.value.bounds.height))")
 			}
-			if let firstPose = analysis.shotStates.first(where: { $0.value.pose != nil })?.value.pose {
-				print("allJoints count:   \(firstPose.allJoints().count)")
-				print("face joints count: \(firstPose.allJoints(in: .face).count)")
-				print("torso joints count: \(firstPose.allJoints(in: .torso).count)")
-			}
 			print("")
 			print("time(s)\tcropX\tsubjectMidX\tsubjectMidY")
 			for frame in analysis.shotStates {
