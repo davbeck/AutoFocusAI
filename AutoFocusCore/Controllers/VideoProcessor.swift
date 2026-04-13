@@ -1,12 +1,21 @@
 import AVFoundation
+import CoreGraphics
 import Foundation
 import Vision
 
 public struct VideoProcessingConfiguration: Sendable {
+	/// The maximum rate at which frames are sampled for pose detection.
 	public var maximumFramesPerSecond: Double
+	/// The maximum pixel length of the decoded frame's long edge used for Vision.
+	public var maximumDetectionLongEdge: CGFloat
 
-	public init(maximumFramesPerSecond: Double = 10) {
+	/// Creates a configuration for pose detection frame sampling and decode size.
+	public init(
+		maximumFramesPerSecond: Double = 10,
+		maximumDetectionLongEdge: CGFloat = 720
+	) {
 		self.maximumFramesPerSecond = maximumFramesPerSecond
+		self.maximumDetectionLongEdge = maximumDetectionLongEdge
 	}
 }
 
@@ -29,6 +38,7 @@ public struct VideoProcessor {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Error.noVideoTrackFound }
 		let duration = try await asset.load(.duration)
 		let nominalFrameRate = try await track.load(.nominalFrameRate)
+		let sourceSize = try await Self.sourceSize(for: track)
 
 		let generator = AVAssetImageGenerator(asset: asset)
 		generator.appliesPreferredTrackTransform = true
@@ -40,6 +50,10 @@ public struct VideoProcessor {
 		let frameTimeTolerance = Self.frameTimeTolerance(for: sampleInterval)
 		generator.requestedTimeToleranceBefore = frameTimeTolerance
 		generator.requestedTimeToleranceAfter = frameTimeTolerance
+		generator.maximumSize = Self.detectionSize(
+			for: sourceSize,
+			maximumLongEdge: configuration.maximumDetectionLongEdge
+		)
 		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
 
 		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
@@ -72,9 +86,25 @@ public struct VideoProcessor {
 		return CMTime(seconds: 1 / frameRate, preferredTimescale: 600)
 	}
 
+	/// Returns the tolerated distance from each requested timestamp when decoding analysis frames.
 	public static func frameTimeTolerance(for sampleInterval: CMTime) -> CMTime {
 		guard sampleInterval > .zero else { return .zero }
 		return CMTimeMultiplyByFloat64(sampleInterval, multiplier: 0.5)
+	}
+
+	/// Returns the decode size used for Vision while preserving aspect ratio and avoiding upscaling.
+	public static func detectionSize(for sourceSize: CGSize, maximumLongEdge: CGFloat) -> CGSize {
+		guard sourceSize.width > 0, sourceSize.height > 0 else { return .zero }
+		guard maximumLongEdge > 0 else { return sourceSize }
+
+		let longEdge = max(sourceSize.width, sourceSize.height)
+		guard longEdge > maximumLongEdge else { return sourceSize }
+
+		let scale = maximumLongEdge / longEdge
+		return CGSize(
+			width: max(1, (sourceSize.width * scale).rounded()),
+			height: max(1, (sourceSize.height * scale).rounded())
+		)
 	}
 
 	private static func requestedTimes(duration: CMTime, sampleInterval: CMTime) -> [CMTime] {
@@ -89,6 +119,12 @@ public struct VideoProcessor {
 		}
 
 		return times
+	}
+
+	private static func sourceSize(for track: AVAssetTrack) async throws -> CGSize {
+		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
+		let rect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+		return CGSize(width: abs(rect.width), height: abs(rect.height))
 	}
 }
 

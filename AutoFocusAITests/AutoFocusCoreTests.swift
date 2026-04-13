@@ -56,6 +56,28 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func detectionSizeDownscalesLongEdgePreservingAspectRatio() {
+		let size = VideoProcessor.detectionSize(
+			for: CGSize(width: 1920, height: 1080),
+			maximumLongEdge: 720
+		)
+
+		#expect(size.width == 720)
+		#expect(size.height == 405)
+	}
+
+	@Test
+	func detectionSizeDoesNotUpscaleSmallerFrames() {
+		let size = VideoProcessor.detectionSize(
+			for: CGSize(width: 640, height: 360),
+			maximumLongEdge: 720
+		)
+
+		#expect(size.width == 640)
+		#expect(size.height == 360)
+	}
+
+	@Test
 	func shotTrackerSpringStepKeepsMovingTowardTarget() {
 		let dampingCoefficient: CGFloat = 6
 
