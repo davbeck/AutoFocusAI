@@ -1,62 +1,23 @@
 # AutoFocusAI Implementation Plan
 
-## M1 Immediate Next Steps
+## M1 Status
 
-### 1. Promote analysis output from poses to shot states
+M1 is functionally complete.
 
-Use the existing pose detection pipeline to produce a time-ordered list of reframing states, not just raw body poses.
+Completed milestones:
 
-- Keep `VideoProcessor` responsible for frame iteration and detection.
-- Add a pass that feeds detected poses into `ShotTracker`.
-- Store per-frame crop bounds for later preview and export.
+- Analysis now produces time-ordered `ShotState` values for preview and export.
+- The app shows original, output, and side-by-side synced playback.
+- Export is wired up through the app save flow.
+- The UI now includes progress stages, export, and comparison controls.
 
-Done when:
+### M1 Follow-Up Polish
 
-- The app can compute a vertical crop rectangle for the full video.
+These are no longer blockers for the first milestone, but are still reasonable cleanup items:
 
-### 2. Show the computed framing in-app
-
-Replace the current "processing only" experience with a basic result preview.
-
-- Keep the existing source player.
-- Overlay or otherwise display the computed crop window on the source video.
-- Show simple states: idle, processing, ready, failed.
-
-Done when:
-
-- Dropping a video results in a visible tracked frame after analysis completes.
-
-### 3. Implement a default export path
-
-Render the computed crop path into a new vertical video file.
-
-- Use a fixed 9:16 output.
-- Preserve source audio when possible.
-- Expose a single `Export` action once analysis is ready.
-- Present a save panel so the user chooses the destination and file name.
-
-Done when:
-
-- A user can drop a video, choose where to save it, and export a vertical output with no settings.
-
-### 4. Tighten the minimal product UI
-
-Reduce the app surface to only what M1 needs.
-
-- Keep drag-and-drop ingest.
-- Replace the empty inspector with status, errors, and the export action.
-- Add clear messaging for unsupported video, failed analysis, and failed export.
-
-Done when:
-
-- The full M1 flow is understandable without any hidden or placeholder UI.
-
-## Suggested Order
-
-1. Analysis to shot states
-2. Preview of computed framing
-3. Export pipeline
-4. Minimal status/error polish
+- Remove now-unused helper code around the old image-generator path.
+- Add a small amount of benchmark automation so performance regressions are easier to catch.
+- Do a manual visual pass on representative sermon footage after the recent pose-processing changes.
 
 ## Pose Detection Performance
 
@@ -64,83 +25,50 @@ Done when:
 
 Reduce analysis time without materially hurting crop quality.
 
-### Proposed Optimizations
+### Completed
 
 #### 1. Relax exact frame extraction
 
-The current analysis path uses `AVAssetImageGenerator` with zero tolerance before and after each requested time. That forces exact seeks and increases decode cost.
+Done.
 
-- Allow nearby frames instead of exact frame matches during analysis.
-- Keep the current sampled timestamps for tracking data, but accept AVFoundation's nearest decoded frame.
-- Verify that interpolation between tracked states still produces stable framing.
-
-Done when:
-
-- Analysis is measurably faster on long clips.
-- Framing quality is unchanged or acceptably close in side-by-side review.
+- Analysis no longer required exact frame seeks for the old image-generator path.
+- This was a small win and is now superseded by the `AVAssetReader` backend.
 
 #### 2. Downscale frames before Vision
 
-Pose detection does not need full-resolution source frames. Running Vision on smaller images should reduce CPU and memory cost.
+Done.
 
-- Resize decoded frames before creating the Vision request handler.
-- Start with a fixed long-edge target such as 512 to 720 pixels.
-- Compare detection quality across a few representative sermon clips before locking the default.
-
-Done when:
-
-- Pose detection time drops meaningfully.
-- Detection remains reliable for a single speaker on stage footage.
+- Vision now runs on scaled frames with a fixed maximum long edge.
+- This remains part of the current pipeline.
 
 #### 3. Reuse Vision request objects
 
-The current loop constructs a new `DetectHumanBodyPoseRequest` for every sampled frame.
+Done for the serial path.
 
-- Move request construction out of the per-frame loop.
-- Keep request configuration stable unless we have a reason to vary it by frame.
-
-Done when:
-
-- The analysis loop no longer allocates a fresh pose request for each sample.
+- Request reuse improved the old serial implementation slightly.
+- The current pipelined path creates one request per concurrent task to keep task-local state isolated.
 
 #### 4. Add region-of-interest detection
 
-Once tracking is established, full-frame pose detection is wasteful. We should search near the prior subject location first and fall back to full-frame detection only when tracking is lost.
+Explored, not adopted.
 
-- Derive a padded ROI from the last known subject bounds.
-- Run pose detection inside that ROI while confidence remains good.
-- Fall back to a full-frame pass when the subject disappears or confidence drops.
-
-Done when:
-
-- Stable single-speaker clips spend most detection time in ROI mode.
-- Recovery from missed detections still works reliably.
+- A padded ROI prototype was built and benchmarked.
+- On `TrackingExample.mov` it regressed performance, so it was reverted.
+- Revisit only if we have a better confidence model or a more efficient way to crop the Vision input.
 
 #### 5. Replace `AVAssetImageGenerator` with `AVAssetReader`
 
-The current approach repeatedly asks AVFoundation for individual frames. For full-video analysis, sequential decode with `AVAssetReader` should be a better fit.
+Done.
 
-- Build a streaming frame reader for the video track.
-- Sample frames by timestamp while decoding sequentially.
-- Preserve source orientation and timing metadata needed by tracking.
-
-Done when:
-
-- Full-video analysis no longer depends on repeated image-generator seeks.
-- End-to-end analysis time improves on medium and long clips.
+- `VideoProcessor` now uses sequential decode through `AVAssetReader`.
+- This is the current extraction backend.
 
 #### 6. Pipeline decode and detection
 
-The current work is strictly serial: decode frame, run Vision, repeat. A small bounded pipeline should overlap those stages.
+Done.
 
-- Separate decode from Vision work.
-- Use a small bounded buffer to avoid excessive memory growth.
-- Keep output ordering deterministic so tracking remains time-ordered.
-
-Done when:
-
-- Decode and detection overlap without changing tracking results.
-- Memory use stays bounded on long videos.
+- The current implementation uses a bounded task group over the reader stream.
+- Benchmarking found that `2` concurrent Vision tasks outperformed both the serial reader path and a wider pipeline of `3`.
 
 #### 7. Add adaptive sampling
 
@@ -155,12 +83,25 @@ Done when:
 - Stable footage analyzes faster than today.
 - Faster subject motion still produces smooth framing after interpolation.
 
-### Recommended Order
+### Benchmarks
 
-1. Relax frame extraction tolerances.
-2. Downscale frames before Vision.
-3. Reuse the pose request object.
-4. Add ROI-based detection.
-5. Replace the extraction backend with `AVAssetReader`.
-6. Pipeline decode and detection.
-7. Add adaptive sampling.
+Measured on the local `TrackingExample.mov` benchmark clip:
+
+1. Original baseline: `135.87s`
+2. Relaxed frame extraction: `133.81s`
+3. Downscaled Vision input: `107.32s`
+4. Reused request objects: `106.55s`
+5. `AVAssetReader` backend: `57.99s`
+6. Pipelined reader + detection (`2` in flight): `54.95s`
+
+### Remaining Work
+
+1. Add adaptive sampling.
+2. Decide whether ROI detection is worth revisiting after adaptive sampling changes the workload shape.
+3. Optionally add automated performance checks around the sermon benchmark clips.
+
+### Revised Order
+
+1. Add adaptive sampling.
+2. Re-evaluate ROI only if adaptive sampling leaves obvious wasted full-frame work.
+3. Add benchmark automation if performance tuning remains active.

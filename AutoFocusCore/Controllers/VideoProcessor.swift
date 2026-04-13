@@ -9,14 +9,22 @@ public struct VideoProcessingConfiguration: Sendable {
 	public var maximumFramesPerSecond: Double
 	/// The maximum pixel length of the decoded frame's long edge used for Vision.
 	public var maximumDetectionLongEdge: CGFloat
+	/// The maximum number of sampled frames to run through Vision concurrently.
+	///
+	/// The current default of `2` is a measured balance point: it overlaps decode
+	/// and body-pose work enough to beat the reader-only path, while wider
+	/// pipelines started to lose time to contention on the benchmark sermon clip.
+	public var maximumConcurrentDetectionRequests: Int
 
 	/// Creates a configuration for pose detection frame sampling and decode size.
 	public init(
 		maximumFramesPerSecond: Double = 10,
-		maximumDetectionLongEdge: CGFloat = 720
+		maximumDetectionLongEdge: CGFloat = 720,
+		maximumConcurrentDetectionRequests: Int = 2
 	) {
 		self.maximumFramesPerSecond = maximumFramesPerSecond
 		self.maximumDetectionLongEdge = maximumDetectionLongEdge
+		self.maximumConcurrentDetectionRequests = maximumConcurrentDetectionRequests
 	}
 }
 
@@ -27,6 +35,14 @@ public struct VideoProcessor {
 	}
 
 	public typealias ProgressHandler = @Sendable (Double) async -> Void
+
+	private struct DetectionInput: @unchecked Sendable {
+		var index: Int
+		var presentationTime: CMTime
+		var sampleBuffer: CMSampleBuffer
+	}
+
+	private typealias DetectionResult = (index: Int, frame: FrameData<[HumanBodyPoseObservation]>)
 
 	public let asset: AVAsset
 	public let configuration: VideoProcessingConfiguration
@@ -61,39 +77,69 @@ public struct VideoProcessor {
 			outputSize: detectionSize
 		)
 		let orientation = Self.imageOrientation(for: preferredTransform)
+		// Keep a small amount of overlap without flooding the system with Vision
+		// work. Benchmarks showed `2` in flight was faster than both a fully serial
+		// reader path and a wider pipeline of `3`.
+		let maximumConcurrentDetectionRequests = max(configuration.maximumConcurrentDetectionRequests, 1)
 
-		var frames: [FrameData<[HumanBodyPoseObservation]>] = []
-		frames.reserveCapacity(requestedTimes.count)
-		var request = DetectHumanBodyPoseRequest()
-		request.detectsHands = false
+		var frames = Array<FrameData<[HumanBodyPoseObservation]>?>(repeating: nil, count: requestedTimes.count)
 
 		if let progressHandler {
 			await progressHandler(0)
 		}
 
 		var nextRequestedTimeIndex = 0
-		while reader.status == .reading,
-			nextRequestedTimeIndex < requestedTimes.count,
-			let sampleBuffer = sampleBufferOutput.copyNextSampleBuffer()
-		{
-			let actualTime = sampleBuffer.presentationTimeStamp
-			guard actualTime >= requestedTimes[nextRequestedTimeIndex] else { continue }
+		var completedFrameCount = 0
 
-			let handler = ImageRequestHandler(sampleBuffer, orientation: orientation)
-			let poses = try await handler.perform(request)
+		try await withThrowingTaskGroup(of: DetectionResult.self) { group in
+			var inFlightTaskCount = 0
 
-			frames.append(FrameData(presentationTime: actualTime, value: poses))
-			if let progressHandler {
-				await progressHandler(Double(nextRequestedTimeIndex + 1) / Double(requestedTimes.count))
+			func store(_ result: DetectionResult) async {
+				frames[result.index] = result.frame
+				completedFrameCount += 1
+				if let progressHandler {
+					await progressHandler(Double(completedFrameCount) / Double(requestedTimes.count))
+				}
 			}
-			nextRequestedTimeIndex += 1
+
+			while reader.status == .reading,
+				nextRequestedTimeIndex < requestedTimes.count,
+				let sampleBuffer = sampleBufferOutput.copyNextSampleBuffer()
+			{
+				let actualTime = sampleBuffer.presentationTimeStamp
+				guard actualTime >= requestedTimes[nextRequestedTimeIndex] else { continue }
+
+				let input = DetectionInput(
+					index: nextRequestedTimeIndex,
+					presentationTime: actualTime,
+					sampleBuffer: sampleBuffer
+				)
+				group.addTask {
+					try await Self.detectPoses(in: input, orientation: orientation)
+				}
+				inFlightTaskCount += 1
+				nextRequestedTimeIndex += 1
+
+				// Bound the queue so decode can stay slightly ahead of Vision without
+				// building unnecessary buffer backlog or increasing CPU contention.
+				if inFlightTaskCount >= maximumConcurrentDetectionRequests,
+					let result = try await group.next()
+				{
+					await store(result)
+					inFlightTaskCount -= 1
+				}
+			}
+
+			while let result = try await group.next() {
+				await store(result)
+			}
 		}
 
 		if reader.status == .failed {
 			throw Error.unableToStartReading(reader.error)
 		}
 
-		return frames
+		return frames.compactMap { $0 }
 	}
 
 	public static func sampleInterval(forNominalFrameRate nominalFrameRate: Float, maximumFramesPerSecond: Double) -> CMTime {
@@ -177,6 +223,23 @@ public struct VideoProcessor {
 		default:
 			return .up
 		}
+	}
+
+	private static func detectPoses(
+		in input: DetectionInput,
+		orientation: CGImagePropertyOrientation
+	) async throws -> DetectionResult {
+		// Vision request values are cheap to create and this keeps each task fully
+		// isolated, avoiding shared mutable request state inside the task group.
+		var request = DetectHumanBodyPoseRequest()
+		request.detectsHands = false
+
+		let handler = ImageRequestHandler(input.sampleBuffer, orientation: orientation)
+		let poses = try await handler.perform(request)
+		return (
+			input.index,
+			FrameData(presentationTime: input.presentationTime, value: poses)
+		)
 	}
 }
 
