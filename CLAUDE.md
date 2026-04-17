@@ -8,6 +8,26 @@ This is a native Xcode project — no SPM or Makefile.
 
 Tests use the Swift Testing framework (`@Test` macros), not XCTest.
 
+## Performance Testing
+
+Use the CLI for apples-to-apples performance measurements. Keep the input clip and sampling configuration the same when comparing changes.
+
+- **Representative sample video:** `.examples/TrackingExample.mov`
+- **Benchmark helper:** `bin/benchmark_cli.sh .examples/TrackingExample.mov`
+- **Optional explicit output path:** `bin/benchmark_cli.sh .examples/TrackingExample.mov /tmp/TrackingExample-benchmark.mov`
+
+The benchmark helper rebuilds `AutoFocusAICLI`, resolves the built binary from Xcode build settings, and runs it under `/usr/bin/time -p`.
+
+When evaluating a performance change:
+
+1. Record a baseline run before editing.
+2. Make the change.
+3. Re-run the same benchmark command.
+4. Compare elapsed time and the CLI's analyzed frame count.
+5. Run `xcodebuild test -project AutoFocusAI.xcodeproj -scheme AutoFocusAI` after the change.
+
+Prefer the sample video above for iterative work. Use longer sermon files only after a change looks promising on the smaller benchmark, since long clips are much slower to validate and can mix together analysis, preview, and playback costs.
+
 ## Architecture
 
 Three targets share the work:
