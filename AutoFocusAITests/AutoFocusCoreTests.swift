@@ -42,14 +42,21 @@ struct AutoFocusCoreTests {
 
 	@Test
 	func sampleIntervalCapsAnalysisRate() {
-		let interval = VideoProcessor.sampleInterval(forNominalFrameRate: 30, maximumFramesPerSecond: 10)
+		let interval = PoseVideoAnalyzer.sampleInterval(forNominalFrameRate: 30, maximumFramesPerSecond: 10)
 
 		#expect(interval.seconds == 0.1)
 	}
 
 	@Test
+	func sampleIntervalFallsBackToConfiguredMaximumWhenTrackRateIsUnknown() {
+		let interval = PoseVideoAnalyzer.sampleInterval(forNominalFrameRate: 0, maximumFramesPerSecond: 8)
+
+		#expect(interval.seconds == 0.125)
+	}
+
+	@Test
 	func detectionSizeDownscalesLongEdgePreservingAspectRatio() {
-		let size = VideoProcessor.detectionSize(
+		let size = PoseVideoAnalyzer.detectionSize(
 			for: CGSize(width: 1920, height: 1080),
 			maximumLongEdge: 720,
 		)
@@ -60,7 +67,7 @@ struct AutoFocusCoreTests {
 
 	@Test
 	func detectionSizeDoesNotUpscaleSmallerFrames() {
-		let size = VideoProcessor.detectionSize(
+		let size = PoseVideoAnalyzer.detectionSize(
 			for: CGSize(width: 640, height: 360),
 			maximumLongEdge: 720,
 		)
@@ -71,17 +78,17 @@ struct AutoFocusCoreTests {
 
 	@Test
 	func imageOrientationMatchesTrackTransform() {
-		#expect(VideoProcessor.imageOrientation(for: .identity) == .up)
+		#expect(PoseVideoAnalyzer.imageOrientation(for: .identity) == .up)
 		#expect(
-			VideoProcessor.imageOrientation(for: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 0, ty: 0))
+			PoseVideoAnalyzer.imageOrientation(for: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 0, ty: 0))
 				== .down,
 		)
 		#expect(
-			VideoProcessor.imageOrientation(for: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0))
+			PoseVideoAnalyzer.imageOrientation(for: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0))
 				== .right,
 		)
 		#expect(
-			VideoProcessor.imageOrientation(for: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0))
+			PoseVideoAnalyzer.imageOrientation(for: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0))
 				== .left,
 		)
 	}

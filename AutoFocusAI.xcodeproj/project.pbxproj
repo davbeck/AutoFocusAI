@@ -72,7 +72,9 @@
 		11890EC02F898BA90073B04F /* IMPLEMENTATION_PLAN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = IMPLEMENTATION_PLAN.md; sourceTree = "<group>"; };
 		11890EC22F89951A0073B04F /* AutoFocusAICLI */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = AutoFocusAICLI; sourceTree = BUILT_PRODUCTS_DIR; };
 		11890EDC2F89EEE00073B04F /* AutoFocusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = AutoFocusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		118912792F89BA230073B04F /* AutoFocusAI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = file; path = AutoFocusAI.xctestplan; sourceTree = "<group>"; };
+		118912792F89BA230073B04F /* AutoFocusAI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = AutoFocusAI.xctestplan; sourceTree = "<group>"; };
+		11A107422F92AE430009AF43 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
+		11A107432F92AE430009AF43 /* Mintfile */ = {isa = PBXFileReference; lastKnownFileType = text; path = Mintfile; sourceTree = "<group>"; };
 		11BB69012DBD790500135D74 /* AutoFocusAI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AutoFocusAI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		11BB690F2DBD790700135D74 /* AutoFocusAITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AutoFocusAITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		11BB69192DBD790700135D74 /* AutoFocusAIUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AutoFocusAIUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -177,8 +179,10 @@
 			children = (
 				118912792F89BA230073B04F /* AutoFocusAI.xctestplan */,
 				11890EBE2F8989E20073B04F /* README.md */,
+				11A107422F92AE430009AF43 /* CLAUDE.md */,
 				11890EBF2F898B010073B04F /* PRD.md */,
 				11890EC02F898BA90073B04F /* IMPLEMENTATION_PLAN.md */,
+				11A107432F92AE430009AF43 /* Mintfile */,
 				11BB69032DBD790500135D74 /* AutoFocusAI */,
 				11890EC12F8994E90073B04F /* AutoFocusAICLI */,
 				11890EE02F89EF2E0073B04F /* AutoFocusCore */,

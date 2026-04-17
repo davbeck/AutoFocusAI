@@ -4,7 +4,7 @@ import Foundation
 import ImageIO
 import Vision
 
-public struct VideoProcessingConfiguration: Sendable {
+public struct PoseVideoAnalysisConfiguration: Sendable {
 	/// The maximum rate at which frames are sampled for pose detection.
 	public var maximumFramesPerSecond: Double
 	/// The maximum pixel length of the decoded frame's long edge used for Vision.
@@ -28,7 +28,7 @@ public struct VideoProcessingConfiguration: Sendable {
 	}
 }
 
-public struct VideoProcessor {
+public struct PoseVideoAnalyzer {
 	public enum Error: Swift.Error {
 		case noVideoTrackFound
 		case unableToStartReading(Swift.Error?)
@@ -45,9 +45,9 @@ public struct VideoProcessor {
 	private typealias DetectionResult = (index: Int, frame: FrameData<[HumanBodyPoseObservation]>)
 
 	public let asset: AVAsset
-	public let configuration: VideoProcessingConfiguration
+	public let configuration: PoseVideoAnalysisConfiguration
 
-	public init(asset: AVAsset, configuration: VideoProcessingConfiguration = .init()) {
+	public init(asset: AVAsset, configuration: PoseVideoAnalysisConfiguration = .init()) {
 		self.asset = asset
 		self.configuration = configuration
 	}

@@ -39,7 +39,7 @@ Three targets share the work:
 ### Data Flow
 
 1. User drops a video → `VideoCoordinator` (`@Observable`) is created and handed to the UI
-2. `VideoProcessor` (actor) samples frames at ~10 FPS, runs `VNDetectHumanBodyPoseRequest` on each
+2. `PoseVideoAnalyzer` samples frames at ~10 FPS, downscales them for Vision, and runs `VNDetectHumanBodyPoseRequest`
 3. `ShotTracker` (actor) ingests detected poses and computes smooth crop bounds using a spring/damping physics model (force from bbox offset → velocity → position with damping)
 4. Results are stored as `[FrameData<ShotState>]`; `BinarySearch.value(atOrBefore:)` provides O(log n) time-based lookup
 5. `VideoReframer` (actor) orchestrates analysis + export: builds an `AVMutableVideoComposition` that applies the computed crop path per frame and writes output
@@ -48,7 +48,7 @@ Three targets share the work:
 
 | File                                             | Role                                               |
 | ------------------------------------------------ | -------------------------------------------------- |
-| `AutoFocusCore/Controllers/VideoProcessor.swift` | Frame extraction + Vision pose detection           |
+| `AutoFocusCore/Controllers/PoseVideoAnalyzer.swift` | Frame extraction + Vision pose detection         |
 | `AutoFocusCore/Controllers/ShotTracker.swift`    | Physics-based smooth tracking; outputs crop bounds |
 | `AutoFocusCore/Controllers/VideoReframer.swift`  | End-to-end analysis + AVFoundation export          |
 | `AutoFocusCore/Helpers/BinarySearch.swift`       | Generic binary search used for frame-time lookup   |

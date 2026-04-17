@@ -141,7 +141,7 @@ public actor VideoReframer {
 
 		let sourceSize = try await Self.sourceSize(for: track)
 		await progressHandler?(.init(stage: .poseDetection, fractionCompleted: 0))
-		let poseFrames = try await VideoProcessor(asset: asset).process { progress in
+		let poseFrames = try await PoseVideoAnalyzer(asset: asset).process { progress in
 			await progressHandler?(
 				.init(
 					stage: .poseDetection,
