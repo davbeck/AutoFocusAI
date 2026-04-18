@@ -57,7 +57,7 @@ Three targets share the work:
 
 ### Concurrency Model
 
-Swift 6 strict concurrency is enabled. All core controllers are `actor` types. UI calls go through `@MainActor`. Use `@preconcurrency import AVFoundation` where required by SDK threading.
+Swift 6 strict concurrency is enabled. Do not use `@unchecked Sendable`, `@preconcurrency`, `assumeIsolated` or any other escape hatches.
 
 ### Tracking Algorithm Notes
 
