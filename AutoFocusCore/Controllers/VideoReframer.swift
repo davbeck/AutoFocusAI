@@ -119,7 +119,7 @@ public enum VideoReframerError: Swift.Error {
 	case exportCancelled
 }
 
-public actor VideoReframer {
+public struct VideoReframer {
 	public typealias ProgressHandler = @Sendable (ReframingProgress) async -> Void
 
 	private static let poseDetectionWeight = 0.7

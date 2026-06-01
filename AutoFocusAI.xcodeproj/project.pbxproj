@@ -12,6 +12,7 @@
 		11890EDE2F89EF050073B04F /* AutoFocusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11890EDC2F89EEE00073B04F /* AutoFocusCore.framework */; };
 		11890EDF2F89EF0B0073B04F /* AutoFocusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11890EDC2F89EEE00073B04F /* AutoFocusCore.framework */; };
 		11890EEF2F8A0D990073B04F /* AutoFocusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11890EDC2F89EEE00073B04F /* AutoFocusCore.framework */; };
+		11CA38D12FBA74D7003876F4 /* afai in Embed CLI */ = {isa = PBXBuildFile; fileRef = 11890EC22F89951A0073B04F /* afai */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -64,13 +65,24 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		11CA38D02FBA74C4003876F4 /* Embed CLI */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				11CA38D12FBA74D7003876F4 /* afai in Embed CLI */,
+			);
+			name = "Embed CLI";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		11890EBE2F8989E20073B04F /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		11890EBF2F898B010073B04F /* PRD.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = PRD.md; sourceTree = "<group>"; };
 		11890EC02F898BA90073B04F /* IMPLEMENTATION_PLAN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = IMPLEMENTATION_PLAN.md; sourceTree = "<group>"; };
-		11890EC22F89951A0073B04F /* AutoFocusAICLI */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = AutoFocusAICLI; sourceTree = BUILT_PRODUCTS_DIR; };
+		11890EC22F89951A0073B04F /* afai */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = afai; sourceTree = BUILT_PRODUCTS_DIR; };
 		11890EDC2F89EEE00073B04F /* AutoFocusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = AutoFocusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		118912792F89BA230073B04F /* AutoFocusAI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = AutoFocusAI.xctestplan; sourceTree = "<group>"; };
 		11A107422F92AE430009AF43 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
@@ -196,7 +208,7 @@
 			isa = PBXGroup;
 			children = (
 				11BB69012DBD790500135D74 /* AutoFocusAI.app */,
-				11890EC22F89951A0073B04F /* AutoFocusAICLI */,
+				11890EC22F89951A0073B04F /* afai */,
 				11890EDC2F89EEE00073B04F /* AutoFocusCore.framework */,
 				11BB690F2DBD790700135D74 /* AutoFocusAITests.xctest */,
 				11BB69192DBD790700135D74 /* AutoFocusAIUITests.xctest */,
@@ -238,7 +250,7 @@
 				11890ECB2F89A3AB0073B04F /* ArgumentParser */,
 			);
 			productName = AutoFocusAICLI;
-			productReference = 11890EC22F89951A0073B04F /* AutoFocusAICLI */;
+			productReference = 11890EC22F89951A0073B04F /* afai */;
 			productType = "com.apple.product-type.tool";
 		};
 		11890EE12F89EF420073B04F /* AutoFocusCore */ = {
@@ -272,6 +284,7 @@
 				11BB68FE2DBD790500135D74 /* Frameworks */,
 				11BB68FF2DBD790500135D74 /* Resources */,
 				11890EE42F89EFB10073B04F /* Embed Frameworks */,
+				11CA38D02FBA74C4003876F4 /* Embed CLI */,
 			);
 			buildRules = (
 			);
@@ -507,11 +520,12 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path",
+					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = co.davidbeck.AutoFocusAICLI;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = afai;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 			};
 			name = Debug;
@@ -528,11 +542,12 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path",
+					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = co.davidbeck.AutoFocusAICLI;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = afai;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 			};
 			name = Release;

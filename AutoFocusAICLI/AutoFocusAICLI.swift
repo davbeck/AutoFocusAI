@@ -26,17 +26,16 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 			throw ValidationError("Input video does not exist: \(inputURL.path)")
 		}
 
-		var isDirectory: ObjCBool = false
-		guard !FileManager.default.fileExists(atPath: inputURL.path, isDirectory: &isDirectory) || !isDirectory.boolValue else {
+		guard try inputURL.resourceValues(forKeys: [.fileResourceTypeKey]).fileResourceType != .directory else {
 			throw ValidationError("Input path is a directory, expected a video file: \(inputURL.path)")
 		}
 
-		let outputDirectory = outputURL.deletingLastPathComponent().standardizedFileURL.path
-		guard FileManager.default.fileExists(atPath: outputDirectory, isDirectory: &isDirectory), isDirectory.boolValue else {
+		let outputDirectory = outputURL.deletingLastPathComponent().standardizedFileURL
+		guard try outputDirectory.resourceValues(forKeys: [.fileResourceTypeKey]).fileResourceType == .directory else {
 			throw ValidationError("Output directory does not exist: \(outputDirectory)")
 		}
 
-		guard inputURL.path != outputURL.path else {
+		guard inputURL != outputURL else {
 			throw ValidationError("Input and output paths must be different.")
 		}
 
