@@ -33,6 +33,11 @@ public actor ShotTracker {
 
 	public let horizontalDeadZoneHalfWidthFactor: CGFloat = 0.1
 
+	public let maximumOriginTravelPerSecondFactor: CGFloat = 0.6
+
+	private static let initialTrackingDelta = 1.0
+	private static let maximumTrackingStepDuration = 1.0
+
 	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
 		self.sourceSize = sourceSize
 		self.targetOutput = Self.cropSize(for: sourceSize, aspectRatio: aspectRatio)
@@ -102,19 +107,36 @@ public actor ShotTracker {
 		)
 	}
 
+	private func trackingDelta(at compositionTime: CMTime) -> Double? {
+		guard let currentTime, compositionTime > currentTime else { return nil }
+		return min(compositionTime.seconds - currentTime.seconds, Self.maximumTrackingStepDuration)
+	}
+
+	private func advanceTracking(target desiredOrigin: CGPoint?, deltaTime: Double) {
+		let step = Self.springStep(
+			position: currentBounds.origin,
+			velocity: currentSpeed,
+			target: desiredOrigin,
+			deltaTime: deltaTime,
+			springStiffness: springStiffness,
+			dampingCoefficient: dampingCoefficient,
+			maximumTravelDistance: targetOutput.width * maximumOriginTravelPerSecondFactor * CGFloat(deltaTime),
+		)
+		let origin = clampedOrigin(step.position)
+		currentBounds.origin = origin
+		currentSpeed = step.velocity
+		if origin.x != step.position.x {
+			currentSpeed.x = 0
+		}
+		if origin.y != step.position.y {
+			currentSpeed.y = 0
+		}
+	}
+
 	public func track(_ pose: HumanBodyPoseObservation?, at compositionTime: CMTime) -> ShotState {
 		guard let pose else {
-			if let currentTime, compositionTime > currentTime, compositionTime.seconds - currentTime.seconds < 1 {
-				let step = Self.springStep(
-					position: currentBounds.origin,
-					velocity: currentSpeed,
-					target: nil,
-					deltaTime: compositionTime.seconds - currentTime.seconds,
-					springStiffness: springStiffness,
-					dampingCoefficient: dampingCoefficient,
-				)
-				currentBounds.origin = clampedOrigin(step.position)
-				currentSpeed = step.velocity
+			if let deltaTime = trackingDelta(at: compositionTime) {
+				advanceTracking(target: nil, deltaTime: deltaTime)
 			}
 
 			self.currentTime = compositionTime
@@ -142,20 +164,10 @@ public actor ShotTracker {
 		let subjectCenter = CGPoint(x: boundingRect.midX, y: boundingRect.midY)
 		let desiredOrigin = clampedOrigin(self.desiredOrigin(for: subjectCenter))
 
-		if let currentTime, compositionTime > currentTime, compositionTime.seconds - currentTime.seconds < 1 {
-			let step = Self.springStep(
-				position: currentBounds.origin,
-				velocity: currentSpeed,
-				target: desiredOrigin,
-				deltaTime: compositionTime.seconds - currentTime.seconds,
-				springStiffness: springStiffness,
-				dampingCoefficient: dampingCoefficient,
-			)
-			currentBounds.origin = clampedOrigin(step.position)
-			currentSpeed = step.velocity
+		if let deltaTime = trackingDelta(at: compositionTime) {
+			advanceTracking(target: desiredOrigin, deltaTime: deltaTime)
 		} else {
-			currentBounds.origin = desiredOrigin
-			currentSpeed = .zero
+			advanceTracking(target: desiredOrigin, deltaTime: Self.initialTrackingDelta)
 		}
 
 		self.currentTime = compositionTime
@@ -174,12 +186,14 @@ public actor ShotTracker {
 		deltaTime: Double,
 		springStiffness: CGFloat,
 		dampingCoefficient: CGFloat,
+		maximumTravelDistance: CGFloat? = nil,
 	) -> (position: CGPoint, velocity: CGPoint) {
 		guard deltaTime > 0 else {
 			return (position, velocity)
 		}
 
 		let deltaTime = CGFloat(deltaTime)
+		let startPosition = position
 		var acceleration = CGPoint(
 			x: -velocity.x * dampingCoefficient,
 			y: -velocity.y * dampingCoefficient,
@@ -198,7 +212,51 @@ public actor ShotTracker {
 		position.x += velocity.x * deltaTime
 		position.y += velocity.y * deltaTime
 
+		if let maximumTravelDistance {
+			return limitedMovement(
+				from: startPosition,
+				to: position,
+				velocity: velocity,
+				deltaTime: deltaTime,
+				maximumTravelDistance: maximumTravelDistance,
+			)
+		}
+
 		return (position, velocity)
+	}
+
+	private static func limitedMovement(
+		from startPosition: CGPoint,
+		to proposedPosition: CGPoint,
+		velocity: CGPoint,
+		deltaTime: CGFloat,
+		maximumTravelDistance: CGFloat,
+	) -> (position: CGPoint, velocity: CGPoint) {
+		guard maximumTravelDistance >= 0 else {
+			return (proposedPosition, velocity)
+		}
+
+		let delta = CGPoint(
+			x: proposedPosition.x - startPosition.x,
+			y: proposedPosition.y - startPosition.y,
+		)
+		let distance = hypot(delta.x, delta.y)
+		guard distance > maximumTravelDistance, distance > 0 else {
+			return (proposedPosition, velocity)
+		}
+
+		let scale = maximumTravelDistance / distance
+		let position = CGPoint(
+			x: startPosition.x + delta.x * scale,
+			y: startPosition.y + delta.y * scale,
+		)
+		return (
+			position,
+			CGPoint(
+				x: (position.x - startPosition.x) / deltaTime,
+				y: (position.y - startPosition.y) / deltaTime,
+			)
+		)
 	}
 
 	static func deadZoneOverflow(offset: CGFloat, halfWidth: CGFloat) -> CGFloat {
