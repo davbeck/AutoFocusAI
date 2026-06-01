@@ -37,6 +37,7 @@ public actor ShotTracker {
 
 	private static let initialTrackingDelta = 1.0
 	private static let maximumTrackingStepDuration = 1.0
+	private static let maximumSpringStepDuration = 0.1
 
 	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
 		self.sourceSize = sourceSize
@@ -192,6 +193,52 @@ public actor ShotTracker {
 			return (position, velocity)
 		}
 
+		if deltaTime > Self.maximumSpringStepDuration {
+			var position = position
+			var velocity = velocity
+			var remainingTime = deltaTime
+
+			while remainingTime > 0 {
+				let stepDuration = min(remainingTime, Self.maximumSpringStepDuration)
+				let step = singleSpringStep(
+					position: position,
+					velocity: velocity,
+					target: target,
+					deltaTime: stepDuration,
+					springStiffness: springStiffness,
+					dampingCoefficient: dampingCoefficient,
+					maximumTravelDistance: maximumTravelDistance.map {
+						$0 * CGFloat(stepDuration / deltaTime)
+					},
+				)
+				position = step.position
+				velocity = step.velocity
+				remainingTime -= stepDuration
+			}
+
+			return (position, velocity)
+		}
+
+		return singleSpringStep(
+			position: position,
+			velocity: velocity,
+			target: target,
+			deltaTime: deltaTime,
+			springStiffness: springStiffness,
+			dampingCoefficient: dampingCoefficient,
+			maximumTravelDistance: maximumTravelDistance,
+		)
+	}
+
+	private static func singleSpringStep(
+		position: CGPoint,
+		velocity: CGPoint,
+		target: CGPoint?,
+		deltaTime: Double,
+		springStiffness: CGFloat,
+		dampingCoefficient: CGFloat,
+		maximumTravelDistance: CGFloat?,
+	) -> (position: CGPoint, velocity: CGPoint) {
 		let deltaTime = CGFloat(deltaTime)
 		let startPosition = position
 		var acceleration = CGPoint(
@@ -252,10 +299,7 @@ public actor ShotTracker {
 		)
 		return (
 			position,
-			CGPoint(
-				x: (position.x - startPosition.x) / deltaTime,
-				y: (position.y - startPosition.y) / deltaTime,
-			)
+			.zero,
 		)
 	}
 

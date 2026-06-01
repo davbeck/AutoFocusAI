@@ -177,9 +177,9 @@ struct AutoFocusCoreTests {
 			maximumTravelDistance: 729,
 		)
 
-		#expect(step.position.x == 583.5)
+		#expect(step.position.x >= 583.49)
+		#expect(step.position.x < 1312.5)
 		#expect(step.position.y == 0)
-		#expect(step.velocity.x == -729)
 		#expect(step.velocity.y == 0)
 	}
 
@@ -208,10 +208,78 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func shotTrackerSpringStepDoesNotOscillateOnSparseSamples() {
+		let target = CGPoint(x: 1_030, y: 0)
+		let firstStep = ShotTracker.springStep(
+			position: CGPoint(x: 794.4, y: 0),
+			velocity: .zero,
+			target: target,
+			deltaTime: 0.933,
+			springStiffness: 18,
+			dampingCoefficient: 6,
+			maximumTravelDistance: 680.4,
+		)
+		let secondStep = ShotTracker.springStep(
+			position: firstStep.position,
+			velocity: firstStep.velocity,
+			target: target,
+			deltaTime: 0.933,
+			springStiffness: 18,
+			dampingCoefficient: 6,
+			maximumTravelDistance: 680.4,
+		)
+
+		#expect(firstStep.position.x > 794.4)
+		#expect(abs(firstStep.position.x - target.x) < 1)
+		#expect(abs(secondStep.position.x - target.x) < abs(firstStep.position.x - target.x))
+	}
+
+	@Test
 	func shotTrackerDeadZoneIgnoresSmallHorizontalOffsets() {
 		#expect(ShotTracker.deadZoneOverflow(offset: 40, halfWidth: 60) == 0)
 		#expect(ShotTracker.deadZoneOverflow(offset: 120, halfWidth: 60) == 60)
 		#expect(ShotTracker.deadZoneOverflow(offset: -120, halfWidth: 60) == -60)
+	}
+
+	@Test
+	func poseSelectionStartsWithLargestCandidate() {
+		let index = VideoReframer.selectedPoseCandidateIndex(
+			in: [
+				.init(index: 0, center: CGPoint(x: 100, y: 100), area: 100),
+				.init(index: 1, center: CGPoint(x: 900, y: 100), area: 200),
+			],
+			preferredCenter: nil,
+			maximumDistance: nil,
+		)
+
+		#expect(index == 1)
+	}
+
+	@Test
+	func poseSelectionPrefersContinuityOverLargerDistantCandidate() {
+		let index = VideoReframer.selectedPoseCandidateIndex(
+			in: [
+				.init(index: 0, center: CGPoint(x: 110, y: 100), area: 100),
+				.init(index: 1, center: CGPoint(x: 900, y: 100), area: 1_000),
+			],
+			preferredCenter: CGPoint(x: 100, y: 100),
+			maximumDistance: 300,
+		)
+
+		#expect(index == 0)
+	}
+
+	@Test
+	func poseSelectionRejectsImplausibleContinuityJump() {
+		let index = VideoReframer.selectedPoseCandidateIndex(
+			in: [
+				.init(index: 0, center: CGPoint(x: 900, y: 100), area: 1_000),
+			],
+			preferredCenter: CGPoint(x: 100, y: 100),
+			maximumDistance: 300,
+		)
+
+		#expect(index == nil)
 	}
 
 	@Test

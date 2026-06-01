@@ -142,9 +142,16 @@ public struct VideoReframer {
 	private static let poseDetectionWeight = 0.7
 	private static let shotTrackingWeight = 0.25
 	private static let easingSubdivisionsPerSecond = 8.0
+	private static let maximumContinuityMissCount = 3
 	// Keep preview ramp counts bounded on very long timelines without changing
 	// export quality, which still uses the full analysis.
 	private static let maximumPreviewShotStateCount = 6000
+
+	struct PoseCandidate: Sendable {
+		var index: Int
+		var center: CGPoint
+		var area: CGFloat
+	}
 
 	public let configuration: ReframingConfiguration
 
@@ -171,15 +178,34 @@ public struct VideoReframer {
 
 		var shotStates: [FrameData<ShotState>] = []
 		var detectedPoses = 0
+		var trackedSubjectCenter: CGPoint?
+		var continuityMissCount = 0
 		let trackingCount = max(poseFrames.count, 1)
+		let maximumSubjectJumpDistance = ShotTracker.cropSize(
+			for: sourceSize,
+			aspectRatio: configuration.aspectRatio,
+		).width
 
 		for (index, frame) in poseFrames.enumerated() {
-			let pose = Self.primaryPose(in: frame.value, sourceSize: sourceSize)
+			let pose = Self.primaryPose(
+				in: frame.value,
+				sourceSize: sourceSize,
+				preferredCenter: trackedSubjectCenter,
+				maximumDistance: continuityMissCount < Self.maximumContinuityMissCount
+					? maximumSubjectJumpDistance
+					: nil,
+			)
 			if pose != nil {
 				detectedPoses += 1
 			}
 
 			let state = await tracker.track(pose, at: frame.presentationTime)
+			if let subjectCenter = state.subjectCenter {
+				trackedSubjectCenter = subjectCenter
+				continuityMissCount = 0
+			} else {
+				continuityMissCount += 1
+			}
 			shotStates.append(FrameData(presentationTime: frame.presentationTime, value: state))
 
 			await progressHandler?(
@@ -566,16 +592,62 @@ public struct VideoReframer {
 		}
 	}
 
-	private static func primaryPose(in poses: [HumanBodyPoseObservation], sourceSize: CGSize) -> HumanBodyPoseObservation? {
-		poses.max { lhs, rhs in
-			boundingArea(for: lhs, sourceSize: sourceSize) < boundingArea(for: rhs, sourceSize: sourceSize)
+	private static func primaryPose(
+		in poses: [HumanBodyPoseObservation],
+		sourceSize: CGSize,
+		preferredCenter: CGPoint?,
+		maximumDistance: CGFloat?,
+	) -> HumanBodyPoseObservation? {
+		let candidates = poses.enumerated().map { index, pose in
+			let rect = boundingRect(for: pose, sourceSize: sourceSize)
+			return PoseCandidate(
+				index: index,
+				center: CGPoint(x: rect.midX, y: rect.midY),
+				area: rect.width * rect.height,
+			)
 		}
+
+		guard let index = selectedPoseCandidateIndex(
+			in: candidates,
+			preferredCenter: preferredCenter,
+			maximumDistance: maximumDistance,
+		) else { return nil }
+
+		return poses[index]
 	}
 
-	private static func boundingArea(for pose: HumanBodyPoseObservation, sourceSize: CGSize) -> CGFloat {
+	static func selectedPoseCandidateIndex(
+		in candidates: [PoseCandidate],
+		preferredCenter: CGPoint?,
+		maximumDistance: CGFloat?,
+	) -> Int? {
+		guard let preferredCenter else {
+			return candidates.max { $0.area < $1.area }?.index
+		}
+
+		let nearbyCandidates: [PoseCandidate]
+		if let maximumDistance {
+			nearbyCandidates = candidates.filter {
+				hypot($0.center.x - preferredCenter.x, $0.center.y - preferredCenter.y) <= maximumDistance
+			}
+		} else {
+			nearbyCandidates = candidates
+		}
+
+		return nearbyCandidates
+			.max { lhs, rhs in
+				let lhsDistance = hypot(lhs.center.x - preferredCenter.x, lhs.center.y - preferredCenter.y)
+				let rhsDistance = hypot(rhs.center.x - preferredCenter.x, rhs.center.y - preferredCenter.y)
+				let lhsScore = lhs.area / max(lhsDistance, 1)
+				let rhsScore = rhs.area / max(rhsDistance, 1)
+				return lhsScore < rhsScore
+			}?
+			.index
+	}
+
+	private static func boundingRect(for pose: HumanBodyPoseObservation, sourceSize: CGSize) -> CGRect {
 		let points = pose.allJoints().values.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
-		let rect = CGRect.boundingRect(of: points)
-		return rect.width * rect.height
+		return CGRect.boundingRect(of: points)
 	}
 
 	private static func sourceSize(for track: AVAssetTrack) async throws -> CGSize {
