@@ -16,6 +16,7 @@ final class VideoCoordinator {
 
 	private let asset: AVAsset
 	private let reframer = VideoReframer()
+	private let isAccessingSecurityScopedURL: Bool
 	private let originalItem: AVPlayerItem
 	private var outputItem: AVPlayerItem?
 	private var comparisonItem: AVPlayerItem?
@@ -41,6 +42,7 @@ final class VideoCoordinator {
 
 	init(url: URL) {
 		self.url = url
+		self.isAccessingSecurityScopedURL = url.startAccessingSecurityScopedResource()
 		self.asset = AVURLAsset(url: url)
 
 		let playerItem = AVPlayerItem(asset: asset)
@@ -53,6 +55,12 @@ final class VideoCoordinator {
 		self.installLoopObserver(for: playerItem)
 
 		startAnalysisIfNeeded()
+	}
+
+	deinit {
+		if isAccessingSecurityScopedURL {
+			url.stopAccessingSecurityScopedResource()
+		}
 	}
 
 	func play() {
@@ -69,6 +77,13 @@ final class VideoCoordinator {
 
 	func export(to outputURL: URL) async {
 		guard !isProcessing else { return }
+
+		let isAccessingOutputURL = outputURL.startAccessingSecurityScopedResource()
+		defer {
+			if isAccessingOutputURL {
+				outputURL.stopAccessingSecurityScopedResource()
+			}
+		}
 
 		isProcessing = true
 		defer {

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 import Vision
 
 struct ContentView: View {
-	@SceneStorage("url") private var url: URL?
+	@State private var url: URL?
 
 	@State private var coordinator: VideoCoordinator?
 
@@ -21,20 +21,32 @@ struct ContentView: View {
 			if let coordinator {
 				VideoView(coordinator: coordinator)
 			} else {
-				DropTargetView()
-					.onDrop(of: [.movie], isTargeted: $dragOver) { providers -> Bool in
-						guard let provider = providers.first else { return false }
+				VStack(spacing: 12) {
+					DropTargetView()
+						.onDrop(of: [.movie], isTargeted: $dragOver) { providers -> Bool in
+							guard let provider = providers.first else { return false }
 
-						Task {
-							do {
-								self.url = try await provider.loadFileRepresentation(for: .movie, openInPlace: true).url
-							} catch {
-								self.error = error
+							Task {
+								do {
+									let url = try await provider.loadPersistentFileRepresentation(
+										for: .movie,
+										copyingInto: Self.importedVideoDirectory,
+									)
+									self.error = nil
+									self.url = url
+								} catch {
+									self.error = error
+								}
 							}
+
+							return true
 						}
 
-						return true
+					if let error {
+						Text(error.localizedDescription)
+							.foregroundStyle(.red)
 					}
+				}
 			}
 //			ZStack {
 //				MetalView(image: processor.currentSource)
@@ -197,6 +209,7 @@ struct ContentView: View {
 //			player = AVPlayer(playerItem: videoItem)
 		}
 		.onOpenURL { url in
+			self.error = nil
 			self.url = url
 		}
 		.onChange(of: url, initial: true) { oldValue, newValue in
@@ -213,6 +226,12 @@ struct ContentView: View {
 
 		guard panel.runModal() == .OK else { return nil }
 		return panel.url
+	}
+
+	private static var importedVideoDirectory: URL {
+		FileManager.default
+			.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+			.appendingPathComponent("ImportedVideos", isDirectory: true)
 	}
 }
 

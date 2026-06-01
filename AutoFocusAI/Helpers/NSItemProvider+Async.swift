@@ -38,4 +38,46 @@ public extension NSItemProvider {
 			}
 		}
 	}
+
+	func loadPersistentFileRepresentation(
+		for contentType: UTType,
+		openInPlace: Bool = true,
+		copyingInto directory: URL,
+	) async throws -> URL {
+		try await withCheckedThrowingContinuation { continuation in
+			_ = self.loadFileRepresentation(for: contentType, openInPlace: openInPlace) { url, wasLoadedInPlace, error in
+				do {
+					if let error {
+						throw error
+					}
+
+					guard let url else {
+						throw CocoaError(.fileReadUnknown)
+					}
+
+					guard !wasLoadedInPlace else {
+						continuation.resume(returning: url)
+						return
+					}
+
+					try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+					let fileExtension = url.pathExtension.isEmpty
+						? contentType.preferredFilenameExtension ?? "mov"
+						: url.pathExtension
+					let destinationURL = directory
+						.appendingPathComponent(UUID().uuidString)
+						.appendingPathExtension(fileExtension)
+
+					if FileManager.default.fileExists(atPath: destinationURL.path) {
+						try FileManager.default.removeItem(at: destinationURL)
+					}
+					try FileManager.default.copyItem(at: url, to: destinationURL)
+					continuation.resume(returning: destinationURL)
+				} catch {
+					continuation.resume(throwing: error)
+				}
+			}
+		}
+	}
 }
