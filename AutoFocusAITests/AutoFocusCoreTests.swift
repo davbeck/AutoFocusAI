@@ -1,6 +1,5 @@
 import CoreGraphics
 import CoreMedia
-import ImageIO
 import Testing
 @testable import AutoFocusCore
 
@@ -55,6 +54,11 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func poseAnalysisDefaultsToOneFramePerSecond() {
+		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
+	}
+
+	@Test
 	func detectionSizeDownscalesLongEdgePreservingAspectRatio() {
 		let size = PoseVideoAnalyzer.detectionSize(
 			for: CGSize(width: 1920, height: 1080),
@@ -74,23 +78,6 @@ struct AutoFocusCoreTests {
 
 		#expect(size.width == 640)
 		#expect(size.height == 360)
-	}
-
-	@Test
-	func imageOrientationMatchesTrackTransform() {
-		#expect(PoseVideoAnalyzer.imageOrientation(for: .identity) == .up)
-		#expect(
-			PoseVideoAnalyzer.imageOrientation(for: CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 0, ty: 0))
-				== .down,
-		)
-		#expect(
-			PoseVideoAnalyzer.imageOrientation(for: CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0))
-				== .right,
-		)
-		#expect(
-			PoseVideoAnalyzer.imageOrientation(for: CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0))
-				== .left,
-		)
 	}
 
 	@Test
@@ -178,6 +165,15 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func easedProgressStartsAndEndsSmoothly() {
+		#expect(VideoReframer.easedProgress(0) == 0)
+		#expect(VideoReframer.easedProgress(0.5) == 0.5)
+		#expect(VideoReframer.easedProgress(1) == 1)
+		#expect(VideoReframer.easedProgress(0.25) < 0.25)
+		#expect(VideoReframer.easedProgress(0.75) > 0.75)
+	}
+
+	@Test
 	func previewAnalysisLeavesShortTimelinesUnchanged() {
 		let shotStates = [
 			FrameData(
@@ -207,7 +203,7 @@ struct AutoFocusCoreTests {
 
 	@Test
 	func previewAnalysisCapsLongTimelinesPreservingEndpoints() {
-		let shotStates = (0..<10).map { index in
+		let shotStates = (0 ..< 10).map { index in
 			FrameData(
 				presentationTime: CMTime(seconds: Double(index), preferredTimescale: 600),
 				value: ShotState(

@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreGraphics
 import Foundation
-import ImageIO
 import Vision
 
 public struct PoseVideoAnalysisConfiguration: Sendable {
@@ -10,15 +9,11 @@ public struct PoseVideoAnalysisConfiguration: Sendable {
 	/// The maximum pixel length of the decoded frame's long edge used for Vision.
 	public var maximumDetectionLongEdge: CGFloat
 	/// The maximum number of sampled frames to run through Vision concurrently.
-	///
-	/// The current default of `2` is a measured balance point: it overlaps decode
-	/// and body-pose work enough to beat the reader-only path, while wider
-	/// pipelines started to lose time to contention on the benchmark sermon clip.
 	public var maximumConcurrentDetectionRequests: Int
 
 	/// Creates a configuration for pose detection frame sampling and decode size.
 	public init(
-		maximumFramesPerSecond: Double = 10,
+		maximumFramesPerSecond: Double = 1,
 		maximumDetectionLongEdge: CGFloat = 720,
 		maximumConcurrentDetectionRequests: Int = 2,
 	) {
@@ -31,15 +26,15 @@ public struct PoseVideoAnalysisConfiguration: Sendable {
 public struct PoseVideoAnalyzer {
 	public enum Error: Swift.Error {
 		case noVideoTrackFound
-		case unableToStartReading(Swift.Error?)
+		case unableToGenerateImage(Swift.Error?)
 	}
 
 	public typealias ProgressHandler = @Sendable (Double) async -> Void
 
-	private struct DetectionInput: @unchecked Sendable {
+	private struct ImageDetectionInput: Sendable {
 		var index: Int
 		var presentationTime: CMTime
-		var sampleBuffer: CMSampleBuffer
+		var image: CGImage
 	}
 
 	private typealias DetectionResult = (index: Int, frame: FrameData<[HumanBodyPoseObservation]>)
@@ -71,24 +66,19 @@ public struct PoseVideoAnalyzer {
 			maximumLongEdge: configuration.maximumDetectionLongEdge,
 		)
 		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
-		let (reader, sampleBufferOutput) = try Self.makeSampleBufferOutput(
-			asset: asset,
-			track: track,
-			outputSize: detectionSize,
-		)
-		let orientation = Self.imageOrientation(for: preferredTransform)
-		// Keep a small amount of overlap without flooding the system with Vision
-		// work. Benchmarks showed `2` in flight was faster than both a fully serial
-		// reader path and a wider pipeline of `3`.
-		let maximumConcurrentDetectionRequests = max(configuration.maximumConcurrentDetectionRequests, 1)
+		let generator = AVAssetImageGenerator(asset: asset)
+		generator.appliesPreferredTrackTransform = true
+		generator.requestedTimeToleranceBefore = Self.frameTimeTolerance(for: sampleInterval)
+		generator.requestedTimeToleranceAfter = Self.frameTimeTolerance(for: sampleInterval)
+		generator.maximumSize = detectionSize
 
+		let maximumConcurrentDetectionRequests = max(configuration.maximumConcurrentDetectionRequests, 1)
 		var frames = [FrameData<[HumanBodyPoseObservation]>?](repeating: nil, count: requestedTimes.count)
 
 		if let progressHandler {
 			await progressHandler(0)
 		}
 
-		var nextRequestedTimeIndex = 0
 		var completedFrameCount = 0
 
 		try await withThrowingTaskGroup(of: DetectionResult.self) { group in
@@ -102,26 +92,14 @@ public struct PoseVideoAnalyzer {
 				}
 			}
 
-			while reader.status == .reading,
-			      nextRequestedTimeIndex < requestedTimes.count,
-			      let sampleBuffer = sampleBufferOutput.copyNextSampleBuffer()
-			{
-				let actualTime = sampleBuffer.presentationTimeStamp
-				guard actualTime >= requestedTimes[nextRequestedTimeIndex] else { continue }
-
-				let input = DetectionInput(
-					index: nextRequestedTimeIndex,
-					presentationTime: actualTime,
-					sampleBuffer: sampleBuffer,
-				)
+			for (index, requestedTime) in requestedTimes.enumerated() {
+				let (image, actualTime) = try await Self.generatedImage(using: generator, at: requestedTime)
+				let input = ImageDetectionInput(index: index, presentationTime: actualTime, image: image)
 				group.addTask {
-					try await Self.detectPoses(in: input, orientation: orientation)
+					try await Self.detectPoses(in: input)
 				}
 				inFlightTaskCount += 1
-				nextRequestedTimeIndex += 1
 
-				// Bound the queue so decode can stay slightly ahead of Vision without
-				// building unnecessary buffer backlog or increasing CPU contention.
 				if inFlightTaskCount >= maximumConcurrentDetectionRequests,
 				   let result = try await group.next()
 				{
@@ -135,17 +113,19 @@ public struct PoseVideoAnalyzer {
 			}
 		}
 
-		if reader.status == .failed {
-			throw Error.unableToStartReading(reader.error)
-		}
-
 		return frames.compactMap(\.self)
 	}
 
 	public static func sampleInterval(forNominalFrameRate nominalFrameRate: Float, maximumFramesPerSecond: Double) -> CMTime {
-		let clampedMaximum = max(maximumFramesPerSecond, 1)
+		let clampedMaximum = max(maximumFramesPerSecond, .leastNonzeroMagnitude)
 		let frameRate = nominalFrameRate > 0 ? min(Double(nominalFrameRate), clampedMaximum) : clampedMaximum
 		return CMTime(seconds: 1 / frameRate, preferredTimescale: 600)
+	}
+
+	/// Returns the tolerated distance from each requested timestamp when using sparse image extraction.
+	public static func frameTimeTolerance(for sampleInterval: CMTime) -> CMTime {
+		guard sampleInterval > .zero else { return .zero }
+		return CMTimeMultiplyByFloat64(sampleInterval, multiplier: 0.5)
 	}
 
 	/// Returns the decode size used for Vision while preserving aspect ratio and avoiding upscaling.
@@ -182,53 +162,28 @@ public struct PoseVideoAnalyzer {
 		return CGSize(width: abs(rect.width), height: abs(rect.height))
 	}
 
-	private static func makeSampleBufferOutput(
-		asset: AVAsset,
-		track: AVAssetTrack,
-		outputSize: CGSize,
-	) throws -> (reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
-		let outputSettings: [String: Any] = [
-			kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-			kCVPixelBufferWidthKey as String: max(1, Int(outputSize.width.rounded())),
-			kCVPixelBufferHeightKey as String: max(1, Int(outputSize.height.rounded())),
-		]
-
-		let output = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
-		output.alwaysCopiesSampleData = false
-
-		let reader = try AVAssetReader(asset: asset)
-		guard reader.canAdd(output) else { throw Error.unableToStartReading(reader.error) }
-		reader.add(output)
-
-		guard reader.startReading() else { throw Error.unableToStartReading(reader.error) }
-		return (reader, output)
-	}
-
-	static func imageOrientation(for preferredTransform: CGAffineTransform) -> CGImagePropertyOrientation {
-		switch (preferredTransform.a, preferredTransform.b, preferredTransform.c, preferredTransform.d) {
-		case (1, 0, 0, 1):
-			return .up
-		case (-1, 0, 0, -1):
-			return .down
-		case (0, 1, -1, 0):
-			return .right
-		case (0, -1, 1, 0):
-			return .left
-		default:
-			return .up
+	private static func generatedImage(
+		using generator: AVAssetImageGenerator,
+		at requestedTime: CMTime,
+	) async throws -> (image: CGImage, actualTime: CMTime) {
+		try await withCheckedThrowingContinuation { continuation in
+			generator.generateCGImageAsynchronously(for: requestedTime) { image, actualTime, error in
+				if let error {
+					continuation.resume(throwing: Error.unableToGenerateImage(error))
+				} else if let image {
+					continuation.resume(returning: (image, actualTime))
+				} else {
+					continuation.resume(throwing: Error.unableToGenerateImage(nil))
+				}
+			}
 		}
 	}
 
-	private static func detectPoses(
-		in input: DetectionInput,
-		orientation: CGImagePropertyOrientation,
-	) async throws -> DetectionResult {
-		// Vision request values are cheap to create and this keeps each task fully
-		// isolated, avoiding shared mutable request state inside the task group.
+	private static func detectPoses(in input: ImageDetectionInput) async throws -> DetectionResult {
 		var request = DetectHumanBodyPoseRequest()
 		request.detectsHands = false
 
-		let handler = ImageRequestHandler(input.sampleBuffer, orientation: orientation)
+		let handler = ImageRequestHandler(input.image)
 		let poses = try await handler.perform(request)
 		return (
 			input.index,

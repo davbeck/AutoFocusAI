@@ -63,7 +63,7 @@ public struct ReframingAnalysis: Sendable {
 		reducedShotStates.reserveCapacity(maximumShotStateCount)
 
 		var previousSourceIndex: Int?
-		for reducedIndex in 0..<maximumShotStateCount {
+		for reducedIndex in 0 ..< maximumShotStateCount {
 			let progress = Double(reducedIndex) / Double(maximumShotStateCount - 1)
 			let sourceIndex = Int((Double(lastSourceIndex) * progress).rounded())
 			guard previousSourceIndex != sourceIndex else { continue }
@@ -124,6 +124,7 @@ public struct VideoReframer {
 
 	private static let poseDetectionWeight = 0.7
 	private static let shotTrackingWeight = 0.25
+	private static let easingSubdivisionsPerSecond = 8.0
 	// Keep preview ramp counts bounded on very long timelines without changing
 	// export quality, which still uses the full analysis.
 	private static let maximumPreviewShotStateCount = 6000
@@ -385,28 +386,30 @@ public struct VideoReframer {
 		)
 
 		for (from, to) in zip(shotStates, shotStates.dropFirst()) {
-			let timeRange = CMTimeRange(start: from.presentationTime, end: to.presentationTime)
-			guard timeRange.duration > .zero else { continue }
-
-			configuration.addTransformRamp(
-				.init(
-					timeRange: timeRange,
-					start: transform(
-						for: from.value.bounds,
-						sourceSize: sourceSize,
-						renderSize: renderSize,
-						xOffset: xOffset,
-						yOffset: yOffset,
+			for (startTime, endTime, startBounds, endBounds) in transitionSegments(
+				from: from,
+				to: to,
+			) {
+				configuration.addTransformRamp(
+					.init(
+						timeRange: CMTimeRange(start: startTime, end: endTime),
+						start: transform(
+							for: startBounds,
+							sourceSize: sourceSize,
+							renderSize: renderSize,
+							xOffset: xOffset,
+							yOffset: yOffset,
+						),
+						end: transform(
+							for: endBounds,
+							sourceSize: sourceSize,
+							renderSize: renderSize,
+							xOffset: xOffset,
+							yOffset: yOffset,
+						),
 					),
-					end: transform(
-						for: to.value.bounds,
-						sourceSize: sourceSize,
-						renderSize: renderSize,
-						xOffset: xOffset,
-						yOffset: yOffset,
-					),
-				),
-			)
+				)
+			}
 		}
 	}
 
@@ -421,17 +424,46 @@ public struct VideoReframer {
 		configuration.setCropRectangle(videoSpaceRect(for: firstState.value.bounds, sourceSize: sourceSize), at: .zero)
 
 		for (from, to) in zip(shotStates, shotStates.dropFirst()) {
-			let timeRange = CMTimeRange(start: from.presentationTime, end: to.presentationTime)
-			guard timeRange.duration > .zero else { continue }
+			for (startTime, endTime, startBounds, endBounds) in transitionSegments(
+				from: from,
+				to: to,
+			) {
+				configuration.addCropRectangleRamp(
+					.init(
+						timeRange: CMTimeRange(start: startTime, end: endTime),
+						start: videoSpaceRect(for: startBounds, sourceSize: sourceSize),
+						end: videoSpaceRect(for: endBounds, sourceSize: sourceSize),
+					),
+				)
+			}
+		}
+	}
 
-			configuration.addCropRectangleRamp(
-				.init(
-					timeRange: timeRange,
-					start: videoSpaceRect(for: from.value.bounds, sourceSize: sourceSize),
-					end: videoSpaceRect(for: to.value.bounds, sourceSize: sourceSize),
-				),
+	private static func transitionSegments(
+		from: FrameData<ShotState>,
+		to: FrameData<ShotState>,
+	) -> [(startTime: CMTime, endTime: CMTime, startBounds: CGRect, endBounds: CGRect)] {
+		let timeRange = CMTimeRange(start: from.presentationTime, end: to.presentationTime)
+		guard timeRange.duration > .zero else { return [] }
+
+		let segmentCount = max(1, Int((timeRange.duration.seconds * easingSubdivisionsPerSecond).rounded(.up)))
+		return (0 ..< segmentCount).map { segmentIndex in
+			let startProgress = Double(segmentIndex) / Double(segmentCount)
+			let endProgress = Double(segmentIndex + 1) / Double(segmentCount)
+			let startTime = from.presentationTime + CMTimeMultiplyByFloat64(timeRange.duration, multiplier: startProgress)
+			let endTime = from.presentationTime + CMTimeMultiplyByFloat64(timeRange.duration, multiplier: endProgress)
+			return (
+				startTime,
+				endTime,
+				from.value.bounds.interpolated(to: to.value.bounds, progress: easedProgress(startProgress)),
+				from.value.bounds.interpolated(to: to.value.bounds, progress: easedProgress(endProgress)),
 			)
 		}
+	}
+
+	static func easedProgress(_ progress: Double) -> Double {
+		let progress = min(max(progress, 0), 1)
+		return progress * progress * progress * (progress * (progress * 6 - 15) + 10)
 	}
 
 	private static func transform(
