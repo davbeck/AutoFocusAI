@@ -5,14 +5,9 @@ import Vision
 
 public struct ReframingConfiguration: Sendable {
 	public var aspectRatio: CGSize
-	public var renderSize: CGSize
 
-	public init(
-		aspectRatio: CGSize = ShotTracker.defaultAspectRatio,
-		renderSize: CGSize = CGSize(width: 1080, height: 1920),
-	) {
+	public init(aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
 		self.aspectRatio = aspectRatio
-		self.renderSize = renderSize
 	}
 }
 
@@ -180,7 +175,7 @@ public struct VideoReframer {
 
 		return ReframingAnalysis(
 			sourceSize: sourceSize,
-			renderSize: configuration.renderSize,
+			renderSize: Self.renderSize(for: sourceSize, aspectRatio: configuration.aspectRatio),
 			shotStates: shotStates,
 		)
 	}
@@ -367,6 +362,14 @@ public struct VideoReframer {
 		} else {
 			return CMTime(value: 1, timescale: 30)
 		}
+	}
+
+	static func renderSize(for sourceSize: CGSize, aspectRatio: CGSize) -> CGSize {
+		let cropSize = ShotTracker.cropSize(for: sourceSize, aspectRatio: aspectRatio)
+		return CGSize(
+			width: max(1, cropSize.width.rounded()),
+			height: max(1, cropSize.height.rounded()),
+		)
 	}
 
 	@available(macOS 26, *)

@@ -13,6 +13,28 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func renderSizeUsesNativeSourcePixelsForTargetAspectRatio() {
+		let renderSize = VideoReframer.renderSize(
+			for: CGSize(width: 3840, height: 2160),
+			aspectRatio: ShotTracker.defaultAspectRatio,
+		)
+
+		#expect(renderSize.width == 1215)
+		#expect(renderSize.height == 2160)
+	}
+
+	@Test
+	func renderSizeRoundsFractionalCropPixels() {
+		let renderSize = VideoReframer.renderSize(
+			for: CGSize(width: 1920, height: 1080),
+			aspectRatio: ShotTracker.defaultAspectRatio,
+		)
+
+		#expect(renderSize.width == 608)
+		#expect(renderSize.height == 1080)
+	}
+
+	@Test
 	func shotTrackerStartsCenteredAndClamped() async {
 		let tracker = ShotTracker(sourceSize: CGSize(width: 1920, height: 1080))
 		let bounds = await tracker.currentBounds
