@@ -147,6 +147,48 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func shotTrackerSpringStepLimitsSparseSampleMovement() {
+		let step = ShotTracker.springStep(
+			position: CGPoint(x: 1312.5, y: 0),
+			velocity: .zero,
+			target: CGPoint(x: 0, y: 0),
+			deltaTime: 1,
+			springStiffness: 18,
+			dampingCoefficient: 6,
+			maximumTravelDistance: 729,
+		)
+
+		#expect(step.position.x == 583.5)
+		#expect(step.position.y == 0)
+		#expect(step.velocity.x == -729)
+		#expect(step.velocity.y == 0)
+	}
+
+	@Test
+	func shotTrackerSpringStepDoesNotLimitSmallMovement() {
+		let unrestrictedStep = ShotTracker.springStep(
+			position: .zero,
+			velocity: .zero,
+			target: CGPoint(x: 120, y: 0),
+			deltaTime: 0.1,
+			springStiffness: 18,
+			dampingCoefficient: 6,
+		)
+		let limitedStep = ShotTracker.springStep(
+			position: .zero,
+			velocity: .zero,
+			target: CGPoint(x: 120, y: 0),
+			deltaTime: 0.1,
+			springStiffness: 18,
+			dampingCoefficient: 6,
+			maximumTravelDistance: 100,
+		)
+
+		#expect(limitedStep.position == unrestrictedStep.position)
+		#expect(limitedStep.velocity == unrestrictedStep.velocity)
+	}
+
+	@Test
 	func shotTrackerDeadZoneIgnoresSmallHorizontalOffsets() {
 		#expect(ShotTracker.deadZoneOverflow(offset: 40, halfWidth: 60) == 0)
 		#expect(ShotTracker.deadZoneOverflow(offset: 120, halfWidth: 60) == 60)
