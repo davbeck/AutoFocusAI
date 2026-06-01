@@ -27,6 +27,7 @@ public struct PoseVideoAnalyzer {
 	public enum Error: Swift.Error {
 		case noVideoTrackFound
 		case unableToGenerateImage(Swift.Error?)
+		case noFramesGenerated
 	}
 
 	public typealias ProgressHandler = @Sendable (Double) async -> Void
@@ -40,20 +41,34 @@ public struct PoseVideoAnalyzer {
 	private typealias DetectionResult = (index: Int, frame: FrameData<[HumanBodyPoseObservation]>)
 
 	public let asset: AVAsset
+	private let videoTrack: AVAssetTrack?
 	public let configuration: PoseVideoAnalysisConfiguration
 
-	public init(asset: AVAsset, configuration: PoseVideoAnalysisConfiguration = .init()) {
+	public init(
+		asset: AVAsset,
+		videoTrack: AVAssetTrack? = nil,
+		configuration: PoseVideoAnalysisConfiguration = .init(),
+	) {
 		self.asset = asset
+		self.videoTrack = videoTrack
 		self.configuration = configuration
 	}
 
 	public func process(progressHandler: ProgressHandler? = nil) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
-		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Error.noVideoTrackFound }
-		let duration = try await asset.load(.duration)
-		let (nominalFrameRate, naturalSize, preferredTransform) = try await track.load(
+		let track: AVAssetTrack
+		if let videoTrack {
+			track = videoTrack
+		} else {
+			guard let loadedTrack = try await asset.loadTracks(withMediaType: .video).first else {
+				throw Error.noVideoTrackFound
+			}
+			track = loadedTrack
+		}
+		let (nominalFrameRate, naturalSize, preferredTransform, timeRange) = try await track.load(
 			.nominalFrameRate,
 			.naturalSize,
 			.preferredTransform,
+			.timeRange,
 		)
 		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
 
@@ -65,7 +80,7 @@ public struct PoseVideoAnalyzer {
 			for: sourceSize,
 			maximumLongEdge: configuration.maximumDetectionLongEdge,
 		)
-		let requestedTimes = Self.requestedTimes(duration: duration, sampleInterval: sampleInterval)
+		let requestedTimes = Self.requestedTimes(for: timeRange, sampleInterval: sampleInterval)
 		let generator = AVAssetImageGenerator(asset: asset)
 		generator.appliesPreferredTrackTransform = true
 		generator.requestedTimeToleranceBefore = Self.frameTimeTolerance(for: sampleInterval)
@@ -92,8 +107,23 @@ public struct PoseVideoAnalyzer {
 				}
 			}
 
+			func skipFrame() async {
+				completedFrameCount += 1
+				if let progressHandler {
+					await progressHandler(Double(completedFrameCount) / Double(requestedTimes.count))
+				}
+			}
+
 			for (index, requestedTime) in requestedTimes.enumerated() {
-				let (image, actualTime) = try await Self.generatedImage(using: generator, at: requestedTime)
+				let image: CGImage
+				let actualTime: CMTime
+				do {
+					(image, actualTime) = try await Self.generatedImage(using: generator, at: requestedTime)
+				} catch Error.unableToGenerateImage(_) {
+					await skipFrame()
+					continue
+				}
+
 				let input = ImageDetectionInput(index: index, presentationTime: actualTime, image: image)
 				group.addTask {
 					try await Self.detectPoses(in: input)
@@ -113,7 +143,9 @@ public struct PoseVideoAnalyzer {
 			}
 		}
 
-		return frames.compactMap(\.self)
+		let generatedFrames = frames.compactMap(\.self)
+		guard !generatedFrames.isEmpty else { throw Error.noFramesGenerated }
+		return generatedFrames
 	}
 
 	public static func sampleInterval(forNominalFrameRate nominalFrameRate: Float, maximumFramesPerSecond: Double) -> CMTime {
@@ -143,13 +175,14 @@ public struct PoseVideoAnalyzer {
 		)
 	}
 
-	private static func requestedTimes(duration: CMTime, sampleInterval: CMTime) -> [CMTime] {
-		guard duration > .zero, sampleInterval > .zero else { return [] }
+	static func requestedTimes(for timeRange: CMTimeRange, sampleInterval: CMTime) -> [CMTime] {
+		guard timeRange.duration > .zero, sampleInterval > .zero else { return [] }
 
 		var times: [CMTime] = []
-		var requestedTime = CMTime.zero
+		var requestedTime = timeRange.start
+		let endTime = timeRange.end
 
-		while requestedTime < duration {
+		while requestedTime < endTime {
 			times.append(requestedTime)
 			requestedTime = requestedTime + sampleInterval
 		}
@@ -203,3 +236,17 @@ public struct FrameData<Value> {
 }
 
 extension FrameData: Sendable where Value: Sendable {}
+
+extension PoseVideoAnalyzer.Error: LocalizedError {
+	public var errorDescription: String? {
+		switch self {
+		case .noVideoTrackFound:
+			"No video track was found in the selected file."
+		case let .unableToGenerateImage(error):
+			error.map { "Unable to generate an analysis frame: \($0.localizedDescription)" }
+				?? "Unable to generate an analysis frame."
+		case .noFramesGenerated:
+			"No video frames could be generated for analysis."
+		}
+	}
+}

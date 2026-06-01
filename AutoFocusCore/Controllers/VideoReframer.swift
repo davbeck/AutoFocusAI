@@ -79,6 +79,7 @@ public enum ReframingProgressStage: String, Sendable {
 	case poseDetection
 	case shotTracking
 	case buildingPreview
+	case buildingExport
 	case exporting
 
 	public var label: String {
@@ -89,6 +90,8 @@ public enum ReframingProgressStage: String, Sendable {
 			"Cropping..."
 		case .buildingPreview:
 			"Building Preview..."
+		case .buildingExport:
+			"Preparing Export..."
 		case .exporting:
 			"Exporting..."
 		}
@@ -114,6 +117,25 @@ public enum VideoReframerError: Swift.Error {
 	case exportCancelled
 }
 
+extension VideoReframerError: LocalizedError {
+	public var errorDescription: String? {
+		switch self {
+		case .noVideoTrackFound:
+			"No video track was found in the selected file."
+		case .noDetectedSubject:
+			"No subject was detected in the selected video."
+		case let .unsupportedOutputFileType(fileType):
+			"Unsupported output file type: \(fileType)"
+		case .exportSessionUnavailable:
+			"Unable to create an export session for this video."
+		case .exportFailed:
+			"Video export failed."
+		case .exportCancelled:
+			"Video export was cancelled."
+		}
+	}
+}
+
 public struct VideoReframer {
 	public typealias ProgressHandler = @Sendable (ReframingProgress) async -> Void
 
@@ -137,7 +159,7 @@ public struct VideoReframer {
 
 		let sourceSize = try await Self.sourceSize(for: track)
 		await progressHandler?(.init(stage: .poseDetection, fractionCompleted: 0))
-		let poseFrames = try await PoseVideoAnalyzer(asset: asset).process { progress in
+		let poseFrames = try await PoseVideoAnalyzer(asset: asset, videoTrack: track).process { progress in
 			await progressHandler?(
 				.init(
 					stage: .poseDetection,
@@ -196,7 +218,9 @@ public struct VideoReframer {
 		outputURL: URL,
 		progressHandler: ProgressHandler? = nil,
 	) async throws {
+		await progressHandler?(.init(stage: .buildingExport, fractionCompleted: 0))
 		let videoComposition = try await self.makeVideoComposition(asset: asset, analysis: analysis)
+		await progressHandler?(.init(stage: .buildingExport, fractionCompleted: 1))
 
 		guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
 			throw VideoReframerError.exportSessionUnavailable
@@ -262,7 +286,7 @@ public struct VideoReframer {
 		}
 
 		var layerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: track)
-		Self.configureReframingTransforms(
+		await Self.configureReframingTransforms(
 			&layerConfiguration,
 			shotStates: analysis.shotStates,
 			sourceSize: analysis.sourceSize,
@@ -323,7 +347,7 @@ public struct VideoReframer {
 		)
 
 		var rightLayerConfiguration = AVVideoCompositionLayerInstruction.Configuration(assetTrack: rightTrack)
-		Self.configureReframingTransforms(
+		await Self.configureReframingTransforms(
 			&rightLayerConfiguration,
 			shotStates: analysis.shotStates,
 			sourceSize: analysis.sourceSize,
@@ -372,7 +396,7 @@ public struct VideoReframer {
 		)
 	}
 
-	@available(macOS 26, *)
+	@concurrent
 	private static func configureReframingTransforms(
 		_ configuration: inout AVVideoCompositionLayerInstruction.Configuration,
 		shotStates: [FrameData<ShotState>],
@@ -380,7 +404,7 @@ public struct VideoReframer {
 		renderSize: CGSize,
 		xOffset: CGFloat = 0,
 		yOffset: CGFloat = 0,
-	) {
+	) async {
 		guard let firstState = shotStates.first else { return }
 
 		configuration.setTransform(
@@ -416,7 +440,6 @@ public struct VideoReframer {
 		}
 	}
 
-	@available(macOS 26, *)
 	private static func configureCropRectangles(
 		_ configuration: inout AVVideoCompositionLayerInstruction.Configuration,
 		shotStates: [FrameData<ShotState>],

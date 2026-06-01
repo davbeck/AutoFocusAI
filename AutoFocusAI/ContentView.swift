@@ -24,23 +24,13 @@ struct ContentView: View {
 				VStack(spacing: 12) {
 					DropTargetView()
 						.onDrop(of: [.movie], isTargeted: $dragOver) { providers -> Bool in
-							guard let provider = providers.first else { return false }
-
-							Task {
-								do {
-									let url = try await provider.loadPersistentFileRepresentation(
-										for: .movie,
-										copyingInto: Self.importedVideoDirectory,
-									)
-									self.error = nil
-									self.url = url
-								} catch {
-									self.error = error
-								}
-							}
-
-							return true
+							videoDropped(providers)
 						}
+
+					Button("Open Video...") {
+						openVideoButtonTapped()
+					}
+					.controlSize(.large)
 
 					if let error {
 						Text(error.localizedDescription)
@@ -226,6 +216,37 @@ struct ContentView: View {
 
 		guard panel.runModal() == .OK else { return nil }
 		return panel.url
+	}
+
+	private func openVideoButtonTapped() {
+		let panel = NSOpenPanel()
+		panel.allowedContentTypes = [.movie]
+		panel.allowsMultipleSelection = false
+		panel.canChooseDirectories = false
+		panel.canChooseFiles = true
+
+		guard panel.runModal() == .OK, let url = panel.url else { return }
+		self.error = nil
+		self.url = url
+	}
+
+	private func videoDropped(_ providers: [NSItemProvider]) -> Bool {
+		guard let provider = providers.first else { return false }
+
+		Task {
+			do {
+				let url = try await provider.loadPersistentFileRepresentation(
+					for: .movie,
+					copyingInto: Self.importedVideoDirectory,
+				)
+				self.error = nil
+				self.url = url
+			} catch {
+				self.error = error
+			}
+		}
+
+		return true
 	}
 
 	private static var importedVideoDirectory: URL {

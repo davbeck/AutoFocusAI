@@ -93,12 +93,11 @@ final class VideoCoordinator {
 
 		do {
 			let analysis = try await loadAnalysis()
-			processingProgress = .init(stage: .exporting, fractionCompleted: 0)
+			processingProgress = .init(stage: .buildingExport, fractionCompleted: 0)
+			await Task.yield()
 
-			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL) { [weak self] progress in
-				await MainActor.run {
-					self?.processingProgress = progress
-				}
+			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL) { @MainActor [weak self] progress in
+				self?.processingProgress = progress
 			}
 
 			errorText = nil
@@ -132,10 +131,8 @@ final class VideoCoordinator {
 		processingProgress = .init(stage: .poseDetection, fractionCompleted: 0)
 
 		let task = Task<ReframingAnalysis, Error> { [asset, reframer] in
-			try await reframer.analyze(asset: asset) { [weak self] progress in
-				await MainActor.run {
-					self?.processingProgress = progress
-				}
+			try await reframer.analyze(asset: asset) { @MainActor [weak self] progress in
+				self?.processingProgress = progress
 			}
 		}
 		analysisTask = task

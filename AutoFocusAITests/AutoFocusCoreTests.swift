@@ -76,6 +76,25 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func requestedTimesStartAtVideoTrackStart() {
+		let start = CMTime(seconds: 0.123333, preferredTimescale: 600_000)
+		let sampleInterval = CMTime(seconds: 1, preferredTimescale: 600)
+		let times = PoseVideoAnalyzer.requestedTimes(
+			for: CMTimeRange(
+				start: start,
+				duration: CMTime(seconds: 3, preferredTimescale: 600),
+			),
+			sampleInterval: sampleInterval,
+		)
+
+		#expect(times == [
+			start,
+			start + sampleInterval,
+			start + sampleInterval + sampleInterval,
+		])
+	}
+
+	@Test
 	func poseAnalysisDefaultsToOneFramePerSecond() {
 		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
 	}

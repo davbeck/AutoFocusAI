@@ -45,12 +45,33 @@ struct VideoView: View {
 			}
 
 			ZStack {
-				VideoPlayer(player: coordinator.player)
+				PlayerView(player: coordinator.player)
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 		.onAppear { coordinator.play() }
 		.onDisappear { coordinator.pause() }
+	}
+}
+
+private struct PlayerView: NSViewRepresentable {
+	var player: AVPlayer
+
+	func makeNSView(context: Context) -> AVPlayerView {
+		let view = AVPlayerView()
+		view.player = player
+		view.videoGravity = .resizeAspect
+		return view
+	}
+
+	func updateNSView(_ view: AVPlayerView, context: Context) {
+		if view.player !== player {
+			view.player = player
+		}
+	}
+
+	static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+		view.player = nil
 	}
 }

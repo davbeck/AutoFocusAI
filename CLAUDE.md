@@ -57,7 +57,7 @@ Three targets share the work:
 
 ### Concurrency Model
 
-Swift 6 strict concurrency is enabled. Do not use `@unchecked Sendable`, `@preconcurrency`, `assumeIsolated` or any other escape hatches.
+Swift 6 strict concurrency is enabled. Do not use `@unchecked Sendable`, `@preconcurrency`, `assumeIsolated`, `MainActor.run` or any other escape hatches.
 
 ### Tracking Algorithm Notes
 
