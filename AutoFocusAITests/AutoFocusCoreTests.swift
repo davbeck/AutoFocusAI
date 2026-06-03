@@ -46,6 +46,37 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func shotTrackerUsesTorsoBoundsWhenOversizedPoseHasNoFaceJoints() {
+		let bounds = ShotTracker.subjectBoundingRect(
+			facePoints: [],
+			torsoPoints: [
+				CGPoint(x: 10, y: 20),
+				CGPoint(x: 210, y: 220),
+			],
+			targetBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
+		)
+
+		#expect(bounds == CGRect(x: 10, y: 20, width: 200, height: 200))
+	}
+
+	@Test
+	func shotTrackerUsesFaceBoundsWhenOversizedPoseHasFaceJoints() {
+		let bounds = ShotTracker.subjectBoundingRect(
+			facePoints: [
+				CGPoint(x: 80, y: 90),
+				CGPoint(x: 100, y: 110),
+			],
+			torsoPoints: [
+				CGPoint(x: 10, y: 20),
+				CGPoint(x: 210, y: 220),
+			],
+			targetBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
+		)
+
+		#expect(bounds == CGRect(x: 80, y: 90, width: 20, height: 20))
+	}
+
+	@Test
 	func valueAtOrBeforeReturnsNearestPreviousFrame() {
 		let frames = [
 			FrameData(presentationTime: CMTime(seconds: 1, preferredTimescale: 600), value: 10),

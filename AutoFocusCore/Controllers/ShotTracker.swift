@@ -150,15 +150,22 @@ public actor ShotTracker {
 
 		let faceJoints = Array(pose.allJoints(in: .face).values)
 		let torsoJoints = Array(pose.allJoints(in: .torso).values)
-		let joints = faceJoints + torsoJoints
 		let targetBounds = self.target(for: currentBounds)
 
-		var boundingRect = CGRect.boundingRect(
-			of: joints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
-		)
-		if boundingRect.size.width > targetBounds.size.width || boundingRect.size.height > targetBounds.size.height {
-			boundingRect = CGRect.boundingRect(
-				of: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
+		guard let boundingRect = Self.subjectBoundingRect(
+			facePoints: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
+			torsoPoints: torsoJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
+			targetBounds: targetBounds,
+		) else {
+			if let deltaTime = trackingDelta(at: compositionTime) {
+				advanceTracking(target: nil, deltaTime: deltaTime)
+			}
+
+			self.currentTime = compositionTime
+			return ShotState(
+				bounds: currentBounds,
+				target: targetBounds,
+				subjectCenter: nil,
 			)
 		}
 
@@ -178,6 +185,25 @@ public actor ShotTracker {
 			target: self.target(for: currentBounds),
 			subjectCenter: subjectCenter,
 		)
+	}
+
+	static func subjectBoundingRect(
+		facePoints: [CGPoint],
+		torsoPoints: [CGPoint],
+		targetBounds: CGRect,
+	) -> CGRect? {
+		let points = facePoints + torsoPoints
+		guard !points.isEmpty else { return nil }
+
+		let boundingRect = CGRect.boundingRect(of: points)
+		if
+			!facePoints.isEmpty,
+			boundingRect.size.width > targetBounds.size.width || boundingRect.size.height > targetBounds.size.height
+		{
+			return CGRect.boundingRect(of: facePoints)
+		}
+
+		return boundingRect
 	}
 
 	static func springStep(
