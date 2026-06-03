@@ -4,10 +4,17 @@ import Foundation
 import Vision
 
 public struct ReframingConfiguration: Sendable {
-	public var aspectRatio: CGSize
+	public static let defaultTrackingFramesPerSecond = 8.0
 
-	public init(aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
+	public var aspectRatio: CGSize
+	public var trackingFramesPerSecond: Double
+
+	public init(
+		aspectRatio: CGSize = ShotTracker.defaultAspectRatio,
+		trackingFramesPerSecond: Double = ReframingConfiguration.defaultTrackingFramesPerSecond,
+	) {
 		self.aspectRatio = aspectRatio
+		self.trackingFramesPerSecond = trackingFramesPerSecond
 	}
 }
 
@@ -141,7 +148,6 @@ public struct VideoReframer {
 
 	private static let poseDetectionWeight = 0.7
 	private static let shotTrackingWeight = 0.25
-	private static let easingSubdivisionsPerSecond = 8.0
 	private static let maximumContinuityMissCount = 3
 	// Keep preview ramp counts bounded on very long timelines without changing
 	// export quality, which still uses the full analysis.
@@ -176,11 +182,12 @@ public struct VideoReframer {
 		}
 		let tracker = ShotTracker(sourceSize: sourceSize, aspectRatio: configuration.aspectRatio)
 
-		var shotStates: [FrameData<ShotState>] = []
+		var selectedPoseFrames: [FrameData<HumanBodyPoseObservation?>] = []
 		var detectedPoses = 0
 		var trackedSubjectCenter: CGPoint?
 		var continuityMissCount = 0
 		let trackingCount = max(poseFrames.count, 1)
+		let trackingInterval = Self.trackingInterval(forFramesPerSecond: configuration.trackingFramesPerSecond)
 		let maximumSubjectJumpDistance = ShotTracker.cropSize(
 			for: sourceSize,
 			aspectRatio: configuration.aspectRatio,
@@ -199,14 +206,13 @@ public struct VideoReframer {
 				detectedPoses += 1
 			}
 
-			let state = await tracker.track(pose, at: frame.presentationTime)
-			if let subjectCenter = state.subjectCenter {
+			if let subjectCenter = await tracker.subjectCenter(for: pose) {
 				trackedSubjectCenter = subjectCenter
 				continuityMissCount = 0
 			} else {
 				continuityMissCount += 1
 			}
-			shotStates.append(FrameData(presentationTime: frame.presentationTime, value: state))
+			selectedPoseFrames.append(FrameData(presentationTime: frame.presentationTime, value: pose))
 
 			await progressHandler?(
 				.init(
@@ -220,6 +226,12 @@ public struct VideoReframer {
 		guard detectedPoses > 0 else {
 			throw VideoReframerError.noDetectedSubject
 		}
+
+		let shotStates = await Self.trackShotStates(
+			selectedPoseFrames,
+			tracker: tracker,
+			trackingInterval: trackingInterval,
+		)
 
 		return ReframingAnalysis(
 			sourceSize: sourceSize,
@@ -422,6 +434,61 @@ public struct VideoReframer {
 		)
 	}
 
+	static func trackingInterval(forFramesPerSecond framesPerSecond: Double) -> CMTime {
+		let framesPerSecond = if framesPerSecond.isFinite, framesPerSecond > 0 {
+			framesPerSecond
+		} else {
+			ReframingConfiguration.defaultTrackingFramesPerSecond
+		}
+		return CMTime(seconds: 1 / framesPerSecond, preferredTimescale: 600)
+	}
+
+	static func trackingTimes(from startTime: CMTime, to endTime: CMTime, interval: CMTime) -> [CMTime] {
+		guard endTime > startTime else { return [] }
+		guard interval > .zero else { return [endTime] }
+
+		var times: [CMTime] = []
+		var time = startTime + interval
+		while time < endTime {
+			times.append(time)
+			time = time + interval
+		}
+		times.append(endTime)
+		return times
+	}
+
+	static func trackShotStates(
+		_ selectedPoseFrames: [FrameData<HumanBodyPoseObservation?>],
+		tracker: ShotTracker,
+		trackingInterval: CMTime,
+	) async -> [FrameData<ShotState>] {
+		guard let firstFrame = selectedPoseFrames.first else { return [] }
+
+		var shotStates = [
+			FrameData(
+				presentationTime: firstFrame.presentationTime,
+				value: await tracker.track(firstFrame.value, at: firstFrame.presentationTime),
+			),
+		]
+
+		for (previousFrame, nextFrame) in zip(selectedPoseFrames, selectedPoseFrames.dropFirst()) {
+			for presentationTime in trackingTimes(
+				from: previousFrame.presentationTime,
+				to: nextFrame.presentationTime,
+				interval: trackingInterval,
+			) {
+				shotStates.append(
+					FrameData(
+						presentationTime: presentationTime,
+						value: await tracker.track(nextFrame.value, at: presentationTime),
+					),
+				)
+			}
+		}
+
+		return shotStates
+	}
+
 	@concurrent
 	private static func configureReframingTransforms(
 		_ configuration: inout AVVideoCompositionLayerInstruction.Configuration,
@@ -491,31 +558,19 @@ public struct VideoReframer {
 		}
 	}
 
-	private static func transitionSegments(
+	static func transitionSegments(
 		from: FrameData<ShotState>,
 		to: FrameData<ShotState>,
 	) -> [(startTime: CMTime, endTime: CMTime, startBounds: CGRect, endBounds: CGRect)] {
 		let timeRange = CMTimeRange(start: from.presentationTime, end: to.presentationTime)
 		guard timeRange.duration > .zero else { return [] }
 
-		let segmentCount = max(1, Int((timeRange.duration.seconds * easingSubdivisionsPerSecond).rounded(.up)))
-		return (0 ..< segmentCount).map { segmentIndex in
-			let startProgress = Double(segmentIndex) / Double(segmentCount)
-			let endProgress = Double(segmentIndex + 1) / Double(segmentCount)
-			let startTime = from.presentationTime + CMTimeMultiplyByFloat64(timeRange.duration, multiplier: startProgress)
-			let endTime = from.presentationTime + CMTimeMultiplyByFloat64(timeRange.duration, multiplier: endProgress)
-			return (
-				startTime,
-				endTime,
-				from.value.bounds.interpolated(to: to.value.bounds, progress: easedProgress(startProgress)),
-				from.value.bounds.interpolated(to: to.value.bounds, progress: easedProgress(endProgress)),
-			)
-		}
-	}
-
-	static func easedProgress(_ progress: Double) -> Double {
-		let progress = min(max(progress, 0), 1)
-		return progress * progress * progress * (progress * (progress * 6 - 15) + 10)
+		return [(
+			startTime: timeRange.start,
+			endTime: timeRange.end,
+			startBounds: from.value.bounds,
+			endBounds: to.value.bounds,
+		)]
 	}
 
 	private static func transform(

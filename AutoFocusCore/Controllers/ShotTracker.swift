@@ -134,8 +134,24 @@ public actor ShotTracker {
 		}
 	}
 
-	public func track(_ pose: HumanBodyPoseObservation?, at compositionTime: CMTime) -> ShotState {
-		guard let pose else {
+	func subjectCenter(for pose: HumanBodyPoseObservation?) -> CGPoint? {
+		guard let pose else { return nil }
+
+		let faceJoints = Array(pose.allJoints(in: .face).values)
+		let torsoJoints = Array(pose.allJoints(in: .torso).values)
+		let targetBounds = self.target(for: currentBounds)
+
+		guard let boundingRect = Self.subjectBoundingRect(
+			facePoints: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
+			torsoPoints: torsoJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
+			targetBounds: targetBounds,
+		) else { return nil }
+
+		return CGPoint(x: boundingRect.midX, y: boundingRect.midY)
+	}
+
+	func track(subjectCenter: CGPoint?, at compositionTime: CMTime) -> ShotState {
+		guard let subjectCenter else {
 			if let deltaTime = trackingDelta(at: compositionTime) {
 				advanceTracking(target: nil, deltaTime: deltaTime)
 			}
@@ -148,28 +164,6 @@ public actor ShotTracker {
 			)
 		}
 
-		let faceJoints = Array(pose.allJoints(in: .face).values)
-		let torsoJoints = Array(pose.allJoints(in: .torso).values)
-		let targetBounds = self.target(for: currentBounds)
-
-		guard let boundingRect = Self.subjectBoundingRect(
-			facePoints: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
-			torsoPoints: torsoJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
-			targetBounds: targetBounds,
-		) else {
-			if let deltaTime = trackingDelta(at: compositionTime) {
-				advanceTracking(target: nil, deltaTime: deltaTime)
-			}
-
-			self.currentTime = compositionTime
-			return ShotState(
-				bounds: currentBounds,
-				target: targetBounds,
-				subjectCenter: nil,
-			)
-		}
-
-		let subjectCenter = CGPoint(x: boundingRect.midX, y: boundingRect.midY)
 		let desiredOrigin = clampedOrigin(self.desiredOrigin(for: subjectCenter))
 
 		if let deltaTime = trackingDelta(at: compositionTime) {
@@ -185,6 +179,10 @@ public actor ShotTracker {
 			target: self.target(for: currentBounds),
 			subjectCenter: subjectCenter,
 		)
+	}
+
+	public func track(_ pose: HumanBodyPoseObservation?, at compositionTime: CMTime) -> ShotState {
+		track(subjectCenter: subjectCenter(for: pose), at: compositionTime)
 	}
 
 	static func subjectBoundingRect(

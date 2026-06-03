@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreMedia
 import Testing
+import Vision
 @testable import AutoFocusCore
 
 struct AutoFocusCoreTests {
@@ -128,6 +129,12 @@ struct AutoFocusCoreTests {
 	@Test
 	func poseAnalysisDefaultsToOneFramePerSecond() {
 		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
+	}
+
+	@Test
+	func reframingTracksSpringAtEightFramesPerSecondByDefault() {
+		#expect(ReframingConfiguration().trackingFramesPerSecond == 8)
+		#expect(VideoReframer.trackingInterval(forFramesPerSecond: 8).seconds == 0.125)
 	}
 
 	@Test
@@ -347,15 +354,6 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func easedProgressStartsAndEndsSmoothly() {
-		#expect(VideoReframer.easedProgress(0) == 0)
-		#expect(VideoReframer.easedProgress(0.5) == 0.5)
-		#expect(VideoReframer.easedProgress(1) == 1)
-		#expect(VideoReframer.easedProgress(0.25) < 0.25)
-		#expect(VideoReframer.easedProgress(0.75) > 0.75)
-	}
-
-	@Test
 	func previewAnalysisLeavesShortTimelinesUnchanged() {
 		let shotStates = [
 			FrameData(
@@ -407,5 +405,65 @@ struct AutoFocusCoreTests {
 		#expect(previewAnalysis.shotStates.first?.presentationTime == shotStates.first?.presentationTime)
 		#expect(previewAnalysis.shotStates.last?.presentationTime == shotStates.last?.presentationTime)
 		#expect(previewAnalysis.shotStates.map(\.presentationTime.seconds) == [0, 3, 6, 9])
+	}
+
+	@Test
+	func trackingTimesFillPoseSampleIntervalAtTrackingCadence() {
+		let times = VideoReframer.trackingTimes(
+			from: CMTime(seconds: 0, preferredTimescale: 600),
+			to: CMTime(seconds: 1, preferredTimescale: 600),
+			interval: CMTime(seconds: 0.25, preferredTimescale: 600),
+		)
+
+		#expect(times.map(\.seconds) == [0.25, 0.5, 0.75, 1])
+	}
+
+	@Test
+	func trackShotStatesEmitsDenseSpringStatesBetweenPoseSamples() async {
+		let tracker = ShotTracker(sourceSize: CGSize(width: 1920, height: 1080))
+		let shotStates = await VideoReframer.trackShotStates(
+			[
+				FrameData<HumanBodyPoseObservation?>(
+					presentationTime: CMTime(seconds: 0, preferredTimescale: 600),
+					value: nil,
+				),
+				FrameData<HumanBodyPoseObservation?>(
+					presentationTime: CMTime(seconds: 1, preferredTimescale: 600),
+					value: nil,
+				),
+			],
+			tracker: tracker,
+			trackingInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+		)
+
+		#expect(shotStates.map(\.presentationTime.seconds) == [0, 0.25, 0.5, 0.75, 1])
+	}
+
+	@Test
+	func transitionSegmentsUseSingleLinearRampBetweenDenseSpringStates() {
+		let from = FrameData(
+			presentationTime: CMTime(seconds: 1, preferredTimescale: 600),
+			value: ShotState(
+				bounds: CGRect(x: 100, y: 0, width: 600, height: 1080),
+				target: .zero,
+				subjectCenter: nil,
+			),
+		)
+		let to = FrameData(
+			presentationTime: CMTime(seconds: 1.125, preferredTimescale: 600),
+			value: ShotState(
+				bounds: CGRect(x: 130, y: 0, width: 600, height: 1080),
+				target: .zero,
+				subjectCenter: nil,
+			),
+		)
+
+		let segments = VideoReframer.transitionSegments(from: from, to: to)
+
+		#expect(segments.count == 1)
+		#expect(segments.first?.startTime == from.presentationTime)
+		#expect(segments.first?.endTime == to.presentationTime)
+		#expect(segments.first?.startBounds == from.value.bounds)
+		#expect(segments.first?.endBounds == to.value.bounds)
 	}
 }
