@@ -1,5 +1,5 @@
 import AutoFocusCore
-@preconcurrency import AVFoundation
+import AVFoundation
 import Foundation
 import Observation
 
