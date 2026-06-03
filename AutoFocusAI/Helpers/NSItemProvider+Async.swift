@@ -34,6 +34,7 @@ public extension NSItemProvider {
 					continuation.resume(returning: (url, wasLoadedInPlace))
 				} else {
 					assertionFailure("unexpected callback parameters for loadFileRepresentation")
+					continuation.resume(throwing: CocoaError(.fileReadUnknown))
 				}
 			}
 		}
