@@ -24,7 +24,7 @@ public struct PoseVideoAnalysisConfiguration: Sendable {
 
 	/// Creates a configuration for pose detection frame sampling and decode size.
 	public init(
-		maximumFramesPerSecond: Double = 1,
+		maximumFramesPerSecond: Double = 1 / 5,
 		maximumDetectionLongEdge: CGFloat = 720,
 		maximumConcurrentDetectionRequests: Int = 2,
 		timeRange: CMTimeRange? = nil,
