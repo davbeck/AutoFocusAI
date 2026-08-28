@@ -66,7 +66,7 @@ struct ContentView: View {
 		.toolbar {
 			ToolbarItem(placement: .primaryAction) {
 				Button("Export") {
-					guard let coordinator, let outputURL = exportDestination(for: coordinator) else { return }
+					guard let coordinator, let outputURL = exportDestination(for: coordinator) else { fatalError() }
 					Task {
 						await coordinator.export(to: outputURL)
 					}
