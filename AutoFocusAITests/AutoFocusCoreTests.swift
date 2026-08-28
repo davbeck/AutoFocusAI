@@ -127,8 +127,87 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func requestedTimesStayInsideSelectedRange() throws {
+		let availableTimeRange = CMTimeRange(
+			start: .zero,
+			duration: CMTime(seconds: 30, preferredTimescale: 600),
+		)
+		let selectedTimeRange = CMTimeRange(
+			start: CMTime(seconds: 10, preferredTimescale: 600),
+			end: CMTime(seconds: 22, preferredTimescale: 600),
+		)
+		let resolvedTimeRange = try PoseVideoAnalyzer.resolvedTimeRange(
+			availableTimeRange: availableTimeRange,
+			requestedTimeRange: selectedTimeRange,
+		)
+		let times = PoseVideoAnalyzer.requestedTimes(
+			for: resolvedTimeRange,
+			sampleInterval: CMTime(seconds: 5, preferredTimescale: 600),
+		)
+
+		#expect(resolvedTimeRange == selectedTimeRange)
+		#expect(times.map(\.seconds) == [10, 15, 20])
+	}
+
+	@Test
+	func automaticFrameSelectionUsesIndividualFramesForSparseSamples() {
+		let strategy = PoseVideoAnalyzer.resolvedFrameSelectionStrategy(
+			.automatic,
+			requestedFrameCount: 100,
+			sampleInterval: CMTime(seconds: 5, preferredTimescale: 600),
+			nominalFrameRate: 30,
+		)
+
+		#expect(strategy == .individualFrames)
+	}
+
+	@Test
+	func automaticFrameSelectionUsesReaderForDenseSamples() {
+		let strategy = PoseVideoAnalyzer.resolvedFrameSelectionStrategy(
+			.automatic,
+			requestedFrameCount: 100,
+			sampleInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+			nominalFrameRate: 30,
+		)
+
+		#expect(strategy == .sequentialReader)
+	}
+
+	@Test
+	func automaticFrameSelectionAvoidsReaderSetupForShortRanges() {
+		let strategy = PoseVideoAnalyzer.resolvedFrameSelectionStrategy(
+			.automatic,
+			requestedFrameCount: 10,
+			sampleInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+			nominalFrameRate: 30,
+		)
+
+		#expect(strategy == .individualFrames)
+	}
+
+	@Test
 	func poseAnalysisDefaultsToOneFramePerSecond() {
 		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
+	}
+
+	@Test
+	func poseDataFileUsesVideoRelativeTimestamps() {
+		let timelineOrigin = CMTime(seconds: 4, preferredTimescale: 600)
+		let timeRange = CMTimeRange(
+			start: CMTime(seconds: 14, preferredTimescale: 600),
+			end: CMTime(seconds: 24, preferredTimescale: 600),
+		)
+		let file = PoseDataFile(
+			frames: [],
+			timeRange: timeRange,
+			timelineOrigin: timelineOrigin,
+			sampleInterval: 5,
+		)
+
+		#expect(file.schemaVersion == 1)
+		#expect(file.sampleInterval == 5)
+		#expect(file.timeRange.startTime == 10)
+		#expect(file.timeRange.endTime == 20)
 	}
 
 	@Test

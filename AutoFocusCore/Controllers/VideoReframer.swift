@@ -8,13 +8,16 @@ public struct ReframingConfiguration: Sendable {
 
 	public var aspectRatio: CGSize
 	public var trackingFramesPerSecond: Double
+	public var poseAnalysisConfiguration: PoseVideoAnalysisConfiguration
 
 	public init(
 		aspectRatio: CGSize = ShotTracker.defaultAspectRatio,
 		trackingFramesPerSecond: Double = ReframingConfiguration.defaultTrackingFramesPerSecond,
+		poseAnalysisConfiguration: PoseVideoAnalysisConfiguration = .init(),
 	) {
 		self.aspectRatio = aspectRatio
 		self.trackingFramesPerSecond = trackingFramesPerSecond
+		self.poseAnalysisConfiguration = poseAnalysisConfiguration
 	}
 }
 
@@ -22,11 +25,18 @@ public struct ReframingAnalysis: Sendable {
 	public var sourceSize: CGSize
 	public var renderSize: CGSize
 	public var shotStates: [FrameData<ShotState>]
+	public var timeRange: CMTimeRange?
 
-	public init(sourceSize: CGSize, renderSize: CGSize, shotStates: [FrameData<ShotState>]) {
+	public init(
+		sourceSize: CGSize,
+		renderSize: CGSize,
+		shotStates: [FrameData<ShotState>],
+		timeRange: CMTimeRange? = nil,
+	) {
 		self.sourceSize = sourceSize
 		self.renderSize = renderSize
 		self.shotStates = shotStates
+		self.timeRange = timeRange
 	}
 
 	func interpolatedBounds(at compositionTime: CMTime) -> CGRect? {
@@ -78,6 +88,7 @@ public struct ReframingAnalysis: Sendable {
 			sourceSize: sourceSize,
 			renderSize: renderSize,
 			shotStates: reducedShotStates,
+			timeRange: timeRange,
 		)
 	}
 }
@@ -171,8 +182,17 @@ public struct VideoReframer {
 		}
 
 		let sourceSize = try await Self.sourceSize(for: track)
+		let trackTimeRange = try await track.load(.timeRange)
+		let timeRange = try PoseVideoAnalyzer.resolvedTimeRange(
+			availableTimeRange: trackTimeRange,
+			requestedTimeRange: configuration.poseAnalysisConfiguration.timeRange,
+		)
 		await progressHandler?(.init(stage: .poseDetection, fractionCompleted: 0))
-		let poseFrames = try await PoseVideoAnalyzer(asset: asset, videoTrack: track).process { progress in
+		let poseFrames = try await PoseVideoAnalyzer(
+			asset: asset,
+			videoTrack: track,
+			configuration: configuration.poseAnalysisConfiguration,
+		).process { progress in
 			await progressHandler?(
 				.init(
 					stage: .poseDetection,
@@ -237,6 +257,7 @@ public struct VideoReframer {
 			sourceSize: sourceSize,
 			renderSize: Self.renderSize(for: sourceSize, aspectRatio: configuration.aspectRatio),
 			shotStates: shotStates,
+			timeRange: timeRange,
 		)
 	}
 
@@ -270,6 +291,9 @@ public struct VideoReframer {
 
 		exportSession.videoComposition = videoComposition
 		exportSession.shouldOptimizeForNetworkUse = true
+		if let timeRange = analysis.timeRange {
+			exportSession.timeRange = timeRange
+		}
 		await progressHandler?(.init(stage: .exporting, fractionCompleted: 0))
 		try await exportSession.export(to: outputURL, as: Self.outputFileType(for: outputURL))
 		await progressHandler?(.init(stage: .exporting, fractionCompleted: 1))
