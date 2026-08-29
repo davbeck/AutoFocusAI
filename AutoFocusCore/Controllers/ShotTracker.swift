@@ -15,7 +15,7 @@ public struct ShotState: Sendable {
 
 public actor ShotTracker {
 	public static let defaultAspectRatio = CGSize(width: 9, height: 16)
-	static let targetAnchor = CGPoint(x: 0.5, y: 0.65)
+	static let targetAnchor = CGPoint(x: 0.5, y: 2.0 / 3.0)
 
 	public let sourceSize: CGSize
 
@@ -27,11 +27,15 @@ public actor ShotTracker {
 
 	public var currentTime: CMTime?
 
+	private var hasTrackedSubject = false
+
 	public let springStiffness: CGFloat = 18
 
 	public let dampingCoefficient: CGFloat = 6
 
 	public let horizontalDeadZoneHalfWidthFactor: CGFloat = 0.1
+
+	public let verticalDeadZoneHalfHeightFactor: CGFloat = 0.05
 
 	public let maximumOriginTravelPerSecondFactor: CGFloat = 0.6
 
@@ -39,9 +43,9 @@ public actor ShotTracker {
 	private static let maximumTrackingStepDuration = 1.0
 	private static let maximumSpringStepDuration = 0.1
 
-	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
+	public init(sourceSize: CGSize, outputSize: CGSize) {
 		self.sourceSize = sourceSize
-		self.targetOutput = Self.cropSize(for: sourceSize, aspectRatio: aspectRatio)
+		self.targetOutput = outputSize
 
 		self.currentBounds = CGRect(
 			origin: .init(
@@ -50,6 +54,10 @@ public actor ShotTracker {
 			),
 			size: targetOutput,
 		)
+	}
+
+	public init(sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) {
+		self.init(sourceSize: sourceSize, outputSize: Self.cropSize(for: sourceSize, aspectRatio: aspectRatio))
 	}
 
 	public static func cropSize(for sourceSize: CGSize, aspectRatio: CGSize = ShotTracker.defaultAspectRatio) -> CGSize {
@@ -89,15 +97,20 @@ public actor ShotTracker {
 
 	private func desiredOrigin(for subjectCenter: CGPoint) -> CGPoint {
 		let currentTargetX = currentBounds.minX + targetOutput.width * Self.targetAnchor.x
+		let currentTargetY = currentBounds.minY + targetOutput.height * Self.targetAnchor.y
 		let deadZoneHalfWidth = targetOutput.width * horizontalDeadZoneHalfWidthFactor
 		let horizontalOverflow = Self.deadZoneOverflow(
 			offset: subjectCenter.x - currentTargetX,
 			halfWidth: deadZoneHalfWidth,
 		)
+		let verticalOverflow = Self.deadZoneOverflow(
+			offset: subjectCenter.y - currentTargetY,
+			halfWidth: targetOutput.height * verticalDeadZoneHalfHeightFactor,
+		)
 
 		return CGPoint(
 			x: currentBounds.origin.x + horizontalOverflow,
-			y: subjectCenter.y - targetOutput.height * Self.targetAnchor.y,
+			y: currentBounds.origin.y + verticalOverflow,
 		)
 	}
 
@@ -137,17 +150,14 @@ public actor ShotTracker {
 	func subjectCenter(for pose: HumanBodyPoseObservation?) -> CGPoint? {
 		guard let pose else { return nil }
 
-		let faceJoints = Array(pose.allJoints(in: .face).values)
-		let torsoJoints = Array(pose.allJoints(in: .torso).values)
-		let targetBounds = self.target(for: currentBounds)
+		let facePoints = pose.allJoints(in: .face).values
+			.filter { $0.confidence > 0.1 }
+			.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
+		let torsoPoints = pose.allJoints(in: .torso).values
+			.filter { $0.confidence > 0.1 }
+			.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
 
-		guard let boundingRect = Self.subjectBoundingRect(
-			facePoints: faceJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
-			torsoPoints: torsoJoints.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) },
-			targetBounds: targetBounds,
-		) else { return nil }
-
-		return CGPoint(x: boundingRect.midX, y: boundingRect.midY)
+		return Self.compositionAnchor(facePoints: facePoints, torsoPoints: torsoPoints)
 	}
 
 	func track(subjectCenter: CGPoint?, at compositionTime: CMTime) -> ShotState {
@@ -166,7 +176,11 @@ public actor ShotTracker {
 
 		let desiredOrigin = clampedOrigin(self.desiredOrigin(for: subjectCenter))
 
-		if let deltaTime = trackingDelta(at: compositionTime) {
+		if !hasTrackedSubject {
+			currentBounds.origin = desiredOrigin
+			currentSpeed = .zero
+			hasTrackedSubject = true
+		} else if let deltaTime = trackingDelta(at: compositionTime) {
 			advanceTracking(target: desiredOrigin, deltaTime: deltaTime)
 		} else {
 			advanceTracking(target: desiredOrigin, deltaTime: Self.initialTrackingDelta)
@@ -185,23 +199,23 @@ public actor ShotTracker {
 		track(subjectCenter: subjectCenter(for: pose), at: compositionTime)
 	}
 
-	static func subjectBoundingRect(
+	static func compositionAnchor(
 		facePoints: [CGPoint],
 		torsoPoints: [CGPoint],
-		targetBounds: CGRect,
-	) -> CGRect? {
-		let points = facePoints + torsoPoints
-		guard !points.isEmpty else { return nil }
+	) -> CGPoint? {
+		let faceBounds = facePoints.isEmpty ? nil : CGRect.boundingRect(of: facePoints)
+		let torsoBounds = torsoPoints.isEmpty ? nil : CGRect.boundingRect(of: torsoPoints)
 
-		let boundingRect = CGRect.boundingRect(of: points)
-		if
-			!facePoints.isEmpty,
-			boundingRect.size.width > targetBounds.size.width || boundingRect.size.height > targetBounds.size.height
-		{
-			return CGRect.boundingRect(of: facePoints)
+		switch (faceBounds, torsoBounds) {
+		case let (faceBounds?, torsoBounds?):
+			return CGPoint(x: torsoBounds.midX, y: faceBounds.midY)
+		case let (faceBounds?, nil):
+			return CGPoint(x: faceBounds.midX, y: faceBounds.midY)
+		case let (nil, torsoBounds?):
+			return CGPoint(x: torsoBounds.midX, y: torsoBounds.midY)
+		case (nil, nil):
+			return nil
 		}
-
-		return boundingRect
 	}
 
 	static func springStep(

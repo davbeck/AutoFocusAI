@@ -6,6 +6,28 @@ import Observation
 @MainActor
 @Observable
 final class VideoCoordinator {
+	enum OutputFormat: String, CaseIterable, Identifiable, Sendable {
+		case maximum9By16
+		case fullHDLandscape
+		case fullHDVertical
+		case custom
+
+		var id: Self { self }
+
+		var label: String {
+			switch self {
+			case .maximum9By16:
+				"9:16 Max"
+			case .fullHDLandscape:
+				"1920 × 1080"
+			case .fullHDVertical:
+				"1080 × 1920"
+			case .custom:
+				"Custom"
+			}
+		}
+	}
+
 	enum PreviewMode: Hashable {
 		case original
 		case output
@@ -15,22 +37,47 @@ final class VideoCoordinator {
 	let url: URL
 
 	private let asset: AVAsset
-	private let reframer = VideoReframer()
 	private let isAccessingSecurityScopedURL: Bool
 	private let originalItem: AVPlayerItem
+	private var sourceAnalysisTask: Task<ReframingSourceAnalysis, Error>?
 	private var outputItem: AVPlayerItem?
 	private var comparisonItem: AVPlayerItem?
 	private var analysis: ReframingAnalysis?
 	private var analysisTask: Task<ReframingAnalysis, Error>?
 	private var outputItemTask: Task<Void, Never>?
 	private var comparisonItemTask: Task<Void, Never>?
+	private var settingsUpdateTask: Task<Void, Never>?
+	private var analysisGeneration = 0
 
 	let player: AVPlayer
 
 	var isProcessing = false
+	var isExporting = false
 	var processingProgress: ReframingProgress?
 	var hasPreviewAnalysis = false
 	var errorText: String?
+	var outputSettingsErrorText: String?
+	var outputFormat = OutputFormat.maximum9By16 {
+		didSet {
+			guard outputFormat != oldValue else { return }
+			outputSettingsDidChange()
+		}
+	}
+
+	var customOutputWidth = 1080 {
+		didSet {
+			guard customOutputWidth != oldValue, outputFormat == .custom else { return }
+			outputSettingsDidChange()
+		}
+	}
+
+	var customOutputHeight = 1920 {
+		didSet {
+			guard customOutputHeight != oldValue, outputFormat == .custom else { return }
+			outputSettingsDidChange()
+		}
+	}
+
 	var previewMode: PreviewMode = .original {
 		didSet {
 			guard previewMode != oldValue else { return }
@@ -75,6 +122,11 @@ final class VideoCoordinator {
 		"\(url.deletingPathExtension().lastPathComponent)-reframed.mov"
 	}
 
+	var resolvedOutputDescription: String? {
+		guard let renderSize = analysis?.renderSize else { return nil }
+		return "\(Int(renderSize.width)) × \(Int(renderSize.height)) pixels"
+	}
+
 	func export(to outputURL: URL) async {
 		guard !isProcessing else { return }
 
@@ -86,8 +138,10 @@ final class VideoCoordinator {
 		}
 
 		isProcessing = true
+		isExporting = true
 		defer {
 			isProcessing = false
+			isExporting = false
 			processingProgress = nil
 		}
 
@@ -96,14 +150,71 @@ final class VideoCoordinator {
 			processingProgress = .init(stage: .buildingExport, fractionCompleted: 0)
 			await Task.yield()
 
-			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL) { @MainActor [weak self] progress in
+			try await currentReframer.export(asset: asset, analysis: analysis, outputURL: outputURL) { @MainActor [weak self] progress in
 				self?.processingProgress = progress
 			}
 
 			errorText = nil
 		} catch {
-			errorText = error.localizedDescription
+			errorText = Self.presentationText(for: error)
 		}
+	}
+
+	private var selectedOutputSize: VideoOutputSize {
+		switch outputFormat {
+		case .maximum9By16:
+			.maximum9By16
+		case .fullHDLandscape:
+			.fullHDLandscape
+		case .fullHDVertical:
+			.fullHDVertical
+		case .custom:
+			.fixed(width: customOutputWidth, height: customOutputHeight)
+		}
+	}
+
+	private var currentReframer: VideoReframer {
+		VideoReframer(configuration: .init(outputSize: selectedOutputSize))
+	}
+
+	private func outputSettingsDidChange() {
+		settingsUpdateTask?.cancel()
+		do {
+			try selectedOutputSize.validate()
+			outputSettingsErrorText = nil
+		} catch {
+			outputSettingsErrorText = Self.presentationText(for: error)
+			invalidateReframingAnalysis()
+			return
+		}
+
+		settingsUpdateTask = Task { @MainActor [weak self] in
+			do {
+				try await Task.sleep(for: .milliseconds(250))
+			} catch {
+				return
+			}
+			guard let self else { return }
+			self.invalidateReframingAnalysis()
+			self.startAnalysisIfNeeded()
+		}
+	}
+
+	private func invalidateReframingAnalysis() {
+		analysisGeneration += 1
+		analysisTask?.cancel()
+		analysisTask = nil
+		outputItemTask?.cancel()
+		outputItemTask = nil
+		comparisonItemTask?.cancel()
+		comparisonItemTask = nil
+		analysis = nil
+		outputItem = nil
+		comparisonItem = nil
+		hasPreviewAnalysis = false
+		isProcessing = false
+		processingProgress = nil
+		updatePreviewMode()
 	}
 
 	private func installLoopObserver(for item: AVPlayerItem) {
@@ -130,8 +241,26 @@ final class VideoCoordinator {
 		isProcessing = true
 		processingProgress = .init(stage: .poseDetection, fractionCompleted: 0)
 
-		let task = Task<ReframingAnalysis, Error> { [asset, reframer] in
-			try await reframer.analyze(asset: asset) { @MainActor [weak self] progress in
+		let sourceAnalysisTask: Task<ReframingSourceAnalysis, Error>
+		if let existingTask = self.sourceAnalysisTask {
+			sourceAnalysisTask = existingTask
+		} else {
+			let asset = asset
+			let task = Task<ReframingSourceAnalysis, Error> { @MainActor [weak self] in
+				try await VideoReframer().analyzeSource(asset: asset) { @MainActor [weak self] progress in
+					self?.processingProgress = progress
+				}
+			}
+			self.sourceAnalysisTask = task
+			sourceAnalysisTask = task
+		}
+
+		let generation = analysisGeneration
+		let reframer = currentReframer
+		let task = Task<ReframingAnalysis, Error> { @MainActor [weak self] in
+			let sourceAnalysis = try await sourceAnalysisTask.value
+			return try await reframer.reframe(sourceAnalysis) { @MainActor [weak self] progress in
+				guard self?.analysisGeneration == generation else { return }
 				self?.processingProgress = progress
 			}
 		}
@@ -142,13 +271,29 @@ final class VideoCoordinator {
 
 			do {
 				let analysis = try await task.value
+				guard self.analysisGeneration == generation else { return }
 				self.analysis = analysis
 				self.hasPreviewAnalysis = true
 				self.errorText = nil
+				self.outputSettingsErrorText = nil
+				self.updatePreviewMode()
+			} catch is CancellationError {
+				return
+			} catch let error as VideoReframerError {
+				guard self.analysisGeneration == generation else { return }
+				switch error {
+				case .invalidOutputSize, .outputSizeExceedsSource:
+					self.outputSettingsErrorText = Self.presentationText(for: error)
+				case .noVideoTrackFound, .noDetectedSubject, .unsupportedOutputFileType,
+				     .exportSessionUnavailable, .exportFailed, .exportCancelled:
+					self.errorText = Self.presentationText(for: error)
+				}
 			} catch {
-				self.errorText = error.localizedDescription
+				guard self.analysisGeneration == generation else { return }
+				self.errorText = Self.presentationText(for: error)
 			}
 
+			guard self.analysisGeneration == generation else { return }
 			self.analysisTask = nil
 			self.finishProcessingIfIdle()
 		}
@@ -191,15 +336,17 @@ final class VideoCoordinator {
 					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.95)
 
 					let outputItem = AVPlayerItem(asset: self.asset)
-					outputItem.videoComposition = try await self.reframer.makeOutputVideoComposition(asset: self.asset, analysis: analysis)
+					outputItem.videoComposition = try await self.currentReframer.makeOutputVideoComposition(asset: self.asset, analysis: analysis)
 					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 1)
 					self.outputItem = outputItem
 					self.errorText = nil
 					if self.previewMode == .output {
 						self.updatePreviewMode()
 					}
+				} catch is CancellationError {
+					return
 				} catch {
-					self.errorText = error.localizedDescription
+					self.errorText = Self.presentationText(for: error)
 				}
 			}
 		case .comparison:
@@ -219,22 +366,26 @@ final class VideoCoordinator {
 					let comparisonAsset = try await VideoReframer.makeComparisonAsset(from: self.asset)
 					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 0.97)
 					let comparisonItem = AVPlayerItem(asset: comparisonAsset)
-					comparisonItem.videoComposition = try await self.reframer.makeComparisonVideoComposition(asset: comparisonAsset, analysis: analysis)
+					comparisonItem.videoComposition = try await self.currentReframer.makeComparisonVideoComposition(asset: comparisonAsset, analysis: analysis)
 					self.processingProgress = .init(stage: .buildingPreview, fractionCompleted: 1)
 					self.comparisonItem = comparisonItem
 					self.errorText = nil
 					if self.previewMode == .comparison {
 						self.updatePreviewMode()
 					}
+				} catch is CancellationError {
+					return
 				} catch {
-					self.errorText = error.localizedDescription
+					self.errorText = Self.presentationText(for: error)
 				}
 			}
 		}
 	}
 
 	private func updatePreviewMode() {
-		preparePreviewItemIfNeeded(for: previewMode)
+		if hasPreviewAnalysis {
+			preparePreviewItemIfNeeded(for: previewMode)
+		}
 
 		let item: AVPlayerItem = switch previewMode {
 		case .original:
@@ -260,5 +411,12 @@ final class VideoCoordinator {
 				self.player.play()
 			}
 		}
+	}
+
+	private static func presentationText(for error: any Error) -> String {
+		let nsError = error as NSError
+		return [nsError.localizedDescription, nsError.localizedRecoverySuggestion]
+			.compactMap(\.self)
+			.joined(separator: " ")
 	}
 }

@@ -6,18 +6,34 @@ import Vision
 public struct ReframingConfiguration: Sendable {
 	public static let defaultTrackingFramesPerSecond = 8.0
 
-	public var aspectRatio: CGSize
+	public var outputSize: VideoOutputSize
 	public var trackingFramesPerSecond: Double
 	public var poseAnalysisConfiguration: PoseVideoAnalysisConfiguration
 
 	public init(
-		aspectRatio: CGSize = ShotTracker.defaultAspectRatio,
+		outputSize: VideoOutputSize = .maximum9By16,
 		trackingFramesPerSecond: Double = ReframingConfiguration.defaultTrackingFramesPerSecond,
 		poseAnalysisConfiguration: PoseVideoAnalysisConfiguration = .init(),
 	) {
-		self.aspectRatio = aspectRatio
+		self.outputSize = outputSize
 		self.trackingFramesPerSecond = trackingFramesPerSecond
 		self.poseAnalysisConfiguration = poseAnalysisConfiguration
+	}
+}
+
+public struct ReframingSourceAnalysis: Sendable {
+	public var sourceSize: CGSize
+	public var poseFrames: [FrameData<[HumanBodyPoseObservation]>]
+	public var timeRange: CMTimeRange?
+
+	public init(
+		sourceSize: CGSize,
+		poseFrames: [FrameData<[HumanBodyPoseObservation]>],
+		timeRange: CMTimeRange? = nil,
+	) {
+		self.sourceSize = sourceSize
+		self.poseFrames = poseFrames
+		self.timeRange = timeRange
 	}
 }
 
@@ -129,6 +145,13 @@ public struct ReframingProgress: Sendable {
 public enum VideoReframerError: Swift.Error {
 	case noVideoTrackFound
 	case noDetectedSubject
+	case invalidOutputSize(width: Int, height: Int)
+	case outputSizeExceedsSource(
+		outputWidth: Int,
+		outputHeight: Int,
+		sourceWidth: Int,
+		sourceHeight: Int,
+	)
 	case unsupportedOutputFileType(String)
 	case exportSessionUnavailable
 	case exportFailed
@@ -142,6 +165,10 @@ extension VideoReframerError: LocalizedError {
 			"No video track was found in the selected file."
 		case .noDetectedSubject:
 			"No subject was detected in the selected video."
+		case let .invalidOutputSize(width, height):
+			"The output size \(width) × \(height) isn't valid for video export."
+		case let .outputSizeExceedsSource(outputWidth, outputHeight, sourceWidth, sourceHeight):
+			"The \(outputWidth) × \(outputHeight) output is larger than the \(sourceWidth) × \(sourceHeight) source video."
 		case let .unsupportedOutputFileType(fileType):
 			"Unsupported output file type: \(fileType)"
 		case .exportSessionUnavailable:
@@ -150,6 +177,18 @@ extension VideoReframerError: LocalizedError {
 			"Video export failed."
 		case .exportCancelled:
 			"Video export was cancelled."
+		}
+	}
+
+	public var recoverySuggestion: String? {
+		switch self {
+		case .invalidOutputSize:
+			"Use positive, even pixel dimensions."
+		case .outputSizeExceedsSource:
+			"Choose a smaller output size or use 9:16 Max."
+		case .noVideoTrackFound, .noDetectedSubject, .unsupportedOutputFileType,
+		     .exportSessionUnavailable, .exportFailed, .exportCancelled:
+			nil
 		}
 	}
 }
@@ -177,11 +216,20 @@ public struct VideoReframer {
 	}
 
 	public func analyze(asset: AVAsset, progressHandler: ProgressHandler? = nil) async throws -> ReframingAnalysis {
+		let sourceAnalysis = try await analyzeSource(asset: asset, progressHandler: progressHandler)
+		return try await reframe(sourceAnalysis, progressHandler: progressHandler)
+	}
+
+	public func analyzeSource(
+		asset: AVAsset,
+		progressHandler: ProgressHandler? = nil,
+	) async throws -> ReframingSourceAnalysis {
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
 			throw VideoReframerError.noVideoTrackFound
 		}
 
 		let sourceSize = try await Self.sourceSize(for: track)
+		_ = try configuration.outputSize.resolve(for: sourceSize)
 		let trackTimeRange = try await track.load(.timeRange)
 		let timeRange = try PoseVideoAnalyzer.resolvedTimeRange(
 			availableTimeRange: trackTimeRange,
@@ -200,20 +248,32 @@ public struct VideoReframer {
 				),
 			)
 		}
-		let tracker = ShotTracker(sourceSize: sourceSize, aspectRatio: configuration.aspectRatio)
+
+		return ReframingSourceAnalysis(
+			sourceSize: sourceSize,
+			poseFrames: poseFrames,
+			timeRange: timeRange,
+		)
+	}
+
+	public func reframe(
+		_ sourceAnalysis: ReframingSourceAnalysis,
+		progressHandler: ProgressHandler? = nil,
+	) async throws -> ReframingAnalysis {
+		let sourceSize = sourceAnalysis.sourceSize
+		let outputSize = try configuration.outputSize.resolve(for: sourceSize)
+		let tracker = ShotTracker(sourceSize: sourceSize, outputSize: outputSize)
 
 		var selectedPoseFrames: [FrameData<HumanBodyPoseObservation?>] = []
 		var detectedPoses = 0
 		var trackedSubjectCenter: CGPoint?
 		var continuityMissCount = 0
-		let trackingCount = max(poseFrames.count, 1)
+		let trackingCount = max(sourceAnalysis.poseFrames.count, 1)
 		let trackingInterval = Self.trackingInterval(forFramesPerSecond: configuration.trackingFramesPerSecond)
-		let maximumSubjectJumpDistance = ShotTracker.cropSize(
-			for: sourceSize,
-			aspectRatio: configuration.aspectRatio,
-		).width
+		let maximumSubjectJumpDistance = outputSize.width
 
-		for (index, frame) in poseFrames.enumerated() {
+		for (index, frame) in sourceAnalysis.poseFrames.enumerated() {
+			try Task.checkCancellation()
 			let pose = Self.primaryPose(
 				in: frame.value,
 				sourceSize: sourceSize,
@@ -255,9 +315,9 @@ public struct VideoReframer {
 
 		return ReframingAnalysis(
 			sourceSize: sourceSize,
-			renderSize: Self.renderSize(for: sourceSize, aspectRatio: configuration.aspectRatio),
+			renderSize: outputSize,
 			shotStates: shotStates,
-			timeRange: timeRange,
+			timeRange: sourceAnalysis.timeRange,
 		)
 	}
 
@@ -448,14 +508,6 @@ public struct VideoReframer {
 		} else {
 			return CMTime(value: 1, timescale: 30)
 		}
-	}
-
-	static func renderSize(for sourceSize: CGSize, aspectRatio: CGSize) -> CGSize {
-		let cropSize = ShotTracker.cropSize(for: sourceSize, aspectRatio: aspectRatio)
-		return CGSize(
-			width: max(1, cropSize.width.rounded()),
-			height: max(1, cropSize.height.rounded()),
-		)
 	}
 
 	static func trackingInterval(forFramesPerSecond framesPerSecond: Double) -> CMTime {

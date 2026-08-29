@@ -61,17 +61,25 @@ struct ContentView: View {
 		}
 		.padding()
 		.inspector(isPresented: $isInspectorPresented, content: {
-			Inspector(isProcessing: coordinator?.isProcessing == true)
+			if let coordinator {
+				Inspector(coordinator: coordinator)
+			} else {
+				ContentUnavailableView("No Video", systemImage: "movieclapper")
+			}
 		})
 		.toolbar {
 			ToolbarItem(placement: .primaryAction) {
 				Button("Export") {
-					guard let coordinator, let outputURL = exportDestination(for: coordinator) else { fatalError() }
+					guard let coordinator, let outputURL = exportDestination(for: coordinator) else { return }
 					Task {
 						await coordinator.export(to: outputURL)
 					}
 				}
-				.disabled(coordinator?.hasPreviewAnalysis != true || coordinator?.isProcessing == true)
+				.disabled(
+					coordinator?.hasPreviewAnalysis != true
+						|| coordinator?.isProcessing == true
+						|| coordinator?.outputSettingsErrorText != nil,
+				)
 			}
 		}
 		.task {

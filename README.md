@@ -33,12 +33,22 @@ Run the built binary with:
 <input-video> <output-video>
 ```
 
-Pose detection runs once per second by default. Use `--pose-interval` to set the
+Pose detection runs once every five seconds by default. Use `--pose-interval` to set the
 number of seconds between detections, and `--start-time` / `--end-time` to limit
 both analysis and video export to a half-open range of video timestamps:
 
 ```sh
 afai input.mov output.mov --pose-interval 5 --start-time 60 --end-time 120
+```
+
+Output is a native-resolution crop: pixels are neither scaled up nor down. Use
+`--resolution` to select `9:16-max` (the default), either built-in fixed size,
+or any custom even-pixel dimensions that fit inside the source video:
+
+```sh
+afai input.mov vertical.mov --resolution 1080x1920
+afai input.mov landscape.mov --resolution 1920x1080
+afai input.mov custom.mov --resolution 720x1280
 ```
 
 Use `--pose-data` in place of the output-video argument to write every detected

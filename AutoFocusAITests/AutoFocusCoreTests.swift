@@ -14,25 +14,59 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func renderSizeUsesNativeSourcePixelsForTargetAspectRatio() {
-		let renderSize = VideoReframer.renderSize(
+	func maximum9By16UsesNativeSourcePixels() throws {
+		let renderSize = try VideoOutputSize.maximum9By16.resolve(
 			for: CGSize(width: 3840, height: 2160),
-			aspectRatio: ShotTracker.defaultAspectRatio,
 		)
 
-		#expect(renderSize.width == 1215)
+		#expect(renderSize.width == 1214)
 		#expect(renderSize.height == 2160)
 	}
 
 	@Test
-	func renderSizeRoundsFractionalCropPixels() {
-		let renderSize = VideoReframer.renderSize(
+	func maximum9By16RoundsToEvenPixelsWithoutScaling() throws {
+		let renderSize = try VideoOutputSize.maximum9By16.resolve(
 			for: CGSize(width: 1920, height: 1080),
-			aspectRatio: ShotTracker.defaultAspectRatio,
 		)
 
 		#expect(renderSize.width == 608)
 		#expect(renderSize.height == 1080)
+	}
+
+	@Test
+	func fixedOutputUsesRequestedNativePixelSize() throws {
+		let outputSize = try VideoOutputSize.fullHDLandscape.resolve(
+			for: CGSize(width: 3840, height: 2160),
+		)
+
+		#expect(outputSize == CGSize(width: 1920, height: 1080))
+	}
+
+	@Test
+	func fixedOutputCannotExceedSourceSize() {
+		#expect(throws: VideoReframerError.self) {
+			try VideoOutputSize.fullHDVertical.resolve(for: CGSize(width: 1920, height: 1080))
+		}
+	}
+
+	@Test
+	func fixedOutputRequiresEvenPixelDimensions() {
+		#expect(throws: VideoReframerError.self) {
+			try VideoOutputSize.fixed(width: 721, height: 1280).validate()
+		}
+	}
+
+	@Test
+	func oversizedOutputErrorExplainsAvailableRecovery() {
+		let error = VideoReframerError.outputSizeExceedsSource(
+			outputWidth: 1080,
+			outputHeight: 1920,
+			sourceWidth: 1920,
+			sourceHeight: 1080,
+		)
+
+		#expect(error.errorDescription == "The 1080 × 1920 output is larger than the 1920 × 1080 source video.")
+		#expect(error.recoverySuggestion == "Choose a smaller output size or use 9:16 Max.")
 	}
 
 	@Test
@@ -47,22 +81,21 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func shotTrackerUsesTorsoBoundsWhenOversizedPoseHasNoFaceJoints() {
-		let bounds = ShotTracker.subjectBoundingRect(
+	func shotTrackerUsesTorsoCenterWhenFaceIsUnavailable() {
+		let anchor = ShotTracker.compositionAnchor(
 			facePoints: [],
 			torsoPoints: [
 				CGPoint(x: 10, y: 20),
 				CGPoint(x: 210, y: 220),
 			],
-			targetBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
 		)
 
-		#expect(bounds == CGRect(x: 10, y: 20, width: 200, height: 200))
+		#expect(anchor == CGPoint(x: 110, y: 120))
 	}
 
 	@Test
-	func shotTrackerUsesFaceBoundsWhenOversizedPoseHasFaceJoints() {
-		let bounds = ShotTracker.subjectBoundingRect(
+	func shotTrackerUsesTorsoForHorizontalCompositionAndFaceForEyeLine() {
+		let anchor = ShotTracker.compositionAnchor(
 			facePoints: [
 				CGPoint(x: 80, y: 90),
 				CGPoint(x: 100, y: 110),
@@ -71,10 +104,45 @@ struct AutoFocusCoreTests {
 				CGPoint(x: 10, y: 20),
 				CGPoint(x: 210, y: 220),
 			],
-			targetBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
 		)
 
-		#expect(bounds == CGRect(x: 80, y: 90, width: 20, height: 20))
+		#expect(anchor == CGPoint(x: 110, y: 100))
+	}
+
+	@Test
+	func tightCropKeepsSmallEyeLineChangesInsideVerticalDeadZone() async {
+		let tracker = ShotTracker(
+			sourceSize: CGSize(width: 3840, height: 2160),
+			outputSize: CGSize(width: 1080, height: 1920),
+		)
+		let initialOrigin = await tracker.currentBounds.origin
+		let initialAnchor = CGPoint(
+			x: initialOrigin.x + 540,
+			y: initialOrigin.y + 1280,
+		)
+
+		_ = await tracker.track(subjectCenter: initialAnchor, at: .zero)
+		let state = await tracker.track(
+			subjectCenter: CGPoint(x: initialAnchor.x, y: initialAnchor.y + 80),
+			at: CMTime(seconds: 0.125, preferredTimescale: 600),
+		)
+
+		#expect(state.bounds.origin == initialOrigin)
+	}
+
+	@Test
+	func tightCropStartsComposedAroundFirstDetectedSubject() async {
+		let tracker = ShotTracker(
+			sourceSize: CGSize(width: 3840, height: 2160),
+			outputSize: CGSize(width: 720, height: 1280),
+		)
+		let subject = CGPoint(x: 610, y: 1674)
+
+		let state = await tracker.track(subjectCenter: subject, at: .zero)
+
+		#expect(state.bounds.contains(subject))
+		#expect(subject.y - state.bounds.minY > state.bounds.height * 0.6)
+		#expect(subject.y - state.bounds.minY < state.bounds.height * 0.75)
 	}
 
 	@Test
@@ -186,8 +254,8 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func poseAnalysisDefaultsToOneFramePerSecond() {
-		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
+	func poseAnalysisDefaultsToOneFrameEveryFiveSeconds() {
+		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 0.2)
 	}
 
 	@Test

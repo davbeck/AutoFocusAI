@@ -3,10 +3,48 @@ import AutoFocusCore
 import AVFoundation
 import Foundation
 
+struct OutputResolution: ExpressibleByArgument, Sendable {
+	var outputSize: VideoOutputSize
+
+	var defaultValueDescription: String {
+		switch outputSize {
+		case .maximum9By16:
+			"9:16-max"
+		case let .fixed(width, height):
+			"\(width)x\(height)"
+		}
+	}
+
+	init(_ outputSize: VideoOutputSize) {
+		self.outputSize = outputSize
+	}
+
+	init?(argument: String) {
+		let normalized = argument.lowercased()
+		if ["9:16-max", "9x16-max", "max"].contains(normalized) {
+			self.outputSize = .maximum9By16
+			return
+		}
+
+		let dimensions = normalized
+			.replacingOccurrences(of: "×", with: "x")
+			.split(separator: "x", omittingEmptySubsequences: false)
+		guard
+			dimensions.count == 2,
+			let width = Int(dimensions[0]),
+			let height = Int(dimensions[1])
+		else {
+			return nil
+		}
+
+		self.outputSize = .fixed(width: width, height: height)
+	}
+}
+
 @main
 struct AutoFocusAICLI: AsyncParsableCommand {
 	static let configuration = CommandConfiguration(
-		abstract: "Analyze and reframe a video to keep the subject centered in a vertical crop.",
+		abstract: "Analyze and reframe a video to keep the subject composed in a native-resolution crop.",
 	)
 
 	@Argument(help: "Path to the source video file.")
@@ -26,6 +64,9 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 
 	@Option(help: "Write raw pose observations as JSON to this path instead of exporting video.")
 	var poseData: String?
+
+	@Option(help: "Native output crop: 9:16-max, 1920x1080, 1080x1920, or a custom WIDTHxHEIGHT.")
+	var resolution = OutputResolution(.maximum9By16)
 
 	@Flag(help: "Print crop bounds and subject position for each tracked frame before exporting.")
 	var debug = false
@@ -48,6 +89,11 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 		}
 		if poseData != nil, output != nil {
 			throw ValidationError("Omit the output video path when using --pose-data.")
+		}
+		do {
+			try resolution.outputSize.validate()
+		} catch {
+			throw ValidationError(Self.presentationText(for: error))
 		}
 	}
 
@@ -104,8 +150,19 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 			throw ValidationError("Provide an output video path.")
 		}
 		let outputURL = try validatedOutputURL(for: output, inputURL: inputURL)
+		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
+		let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+		let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
+		do {
+			_ = try resolution.outputSize.resolve(for: sourceSize)
+		} catch {
+			throw ValidationError(Self.presentationText(for: error))
+		}
 		let reframer = VideoReframer(
-			configuration: .init(poseAnalysisConfiguration: poseConfiguration),
+			configuration: .init(
+				outputSize: resolution.outputSize,
+				poseAnalysisConfiguration: poseConfiguration,
+			),
 		)
 
 		print("Analyzing \(inputURL.lastPathComponent)...")
@@ -118,13 +175,29 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 				print("cropSize:   \(Int(first.value.bounds.width)) x \(Int(first.value.bounds.height))")
 			}
 			print("")
-			print("time(s)\tcropX\tsubjectMidX\tsubjectMidY")
+			print("time(s)\tcropX\tcropY\tsubjectMidX\tsubjectMidY")
 			for frame in analysis.shotStates {
 				let b = frame.value.bounds
 				if let sc = frame.value.subjectCenter {
-					print(String(format: "%.3f\t%.1f\t%.1f\t%.1f", frame.presentationTime.seconds, b.origin.x, sc.x, sc.y))
+					print(
+						String(
+							format: "%.3f\t%.1f\t%.1f\t%.1f\t%.1f",
+							frame.presentationTime.seconds,
+							b.origin.x,
+							b.origin.y,
+							sc.x,
+							sc.y,
+						),
+					)
 				} else {
-					print(String(format: "%.3f\t%.1f\t-\t-", frame.presentationTime.seconds, b.origin.x))
+					print(
+						String(
+							format: "%.3f\t%.1f\t%.1f\t-\t-",
+							frame.presentationTime.seconds,
+							b.origin.x,
+							b.origin.y,
+						),
+					)
 				}
 			}
 			print("")
@@ -176,5 +249,12 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 
 	private static func formatted(_ seconds: Double) -> String {
 		seconds.formatted(.number.precision(.fractionLength(0 ... 3)))
+	}
+
+	private static func presentationText(for error: any Error) -> String {
+		let nsError = error as NSError
+		return [nsError.localizedDescription, nsError.localizedRecoverySuggestion]
+			.compactMap(\.self)
+			.joined(separator: " ")
 	}
 }
