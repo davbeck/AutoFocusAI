@@ -33,9 +33,9 @@ public actor ShotTracker {
 
 	public let dampingCoefficient: CGFloat = 6
 
-	public let horizontalDeadZoneHalfWidthFactor: CGFloat = 0.1
+	public let horizontalDeadZoneHalfWidthFactor: CGFloat = 0.25
 
-	public let verticalDeadZoneHalfHeightFactor: CGFloat = 0.05
+	public let verticalDeadZoneHalfHeightFactor: CGFloat = 0.1
 
 	public let maximumOriginTravelPerSecondFactor: CGFloat = 0.6
 
@@ -95,9 +95,9 @@ public actor ShotTracker {
 		)
 	}
 
-	private func desiredOrigin(for subjectCenter: CGPoint) -> CGPoint {
-		let currentTargetX = currentBounds.minX + targetOutput.width * Self.targetAnchor.x
-		let currentTargetY = currentBounds.minY + targetOutput.height * Self.targetAnchor.y
+	func framingOrigin(for subjectCenter: CGPoint, relativeTo origin: CGPoint) -> CGPoint {
+		let currentTargetX = origin.x + targetOutput.width * Self.targetAnchor.x
+		let currentTargetY = origin.y + targetOutput.height * Self.targetAnchor.y
 		let deadZoneHalfWidth = targetOutput.width * horizontalDeadZoneHalfWidthFactor
 		let horizontalOverflow = Self.deadZoneOverflow(
 			offset: subjectCenter.x - currentTargetX,
@@ -108,10 +108,19 @@ public actor ShotTracker {
 			halfWidth: targetOutput.height * verticalDeadZoneHalfHeightFactor,
 		)
 
-		return CGPoint(
-			x: currentBounds.origin.x + horizontalOverflow,
-			y: currentBounds.origin.y + verticalOverflow,
-		)
+		// Leave room for subsequent movement after a pan, instead of parking
+		// the speaker on the boundary of the horizontal dead zone.
+		return clampedOrigin(CGPoint(
+			x: horizontalOverflow == 0 ? origin.x : subjectCenter.x - targetOutput.width * Self.targetAnchor.x,
+			y: origin.y + verticalOverflow,
+		))
+	}
+
+	func compositionOrigin(for subjectCenter: CGPoint) -> CGPoint {
+		clampedOrigin(CGPoint(
+			x: subjectCenter.x - targetOutput.width * Self.targetAnchor.x,
+			y: subjectCenter.y - targetOutput.height * Self.targetAnchor.y,
+		))
 	}
 
 	private func clampedOrigin(_ origin: CGPoint) -> CGPoint {
@@ -160,7 +169,18 @@ public actor ShotTracker {
 		return Self.compositionAnchor(facePoints: facePoints, torsoPoints: torsoPoints)
 	}
 
-	func track(subjectCenter: CGPoint?, at compositionTime: CMTime) -> ShotState {
+	func track(subjectCenter: CGPoint?, at compositionTime: CMTime, framingOrigin: CGPoint? = nil) -> ShotState {
+		if let framingOrigin, hasTrackedSubject || subjectCenter == nil {
+			currentBounds.origin = clampedOrigin(framingOrigin)
+			currentSpeed = .zero
+			currentTime = compositionTime
+			return ShotState(
+				bounds: currentBounds,
+				target: self.target(for: currentBounds),
+				subjectCenter: subjectCenter,
+			)
+		}
+
 		guard let subjectCenter else {
 			if let deltaTime = trackingDelta(at: compositionTime) {
 				advanceTracking(target: nil, deltaTime: deltaTime)
@@ -174,10 +194,12 @@ public actor ShotTracker {
 			)
 		}
 
-		let desiredOrigin = clampedOrigin(self.desiredOrigin(for: subjectCenter))
+		let desiredOrigin = framingOrigin ?? self.framingOrigin(for: subjectCenter, relativeTo: currentBounds.origin)
 
 		if !hasTrackedSubject {
-			currentBounds.origin = desiredOrigin
+			// Compose the opening shot at the anchor, with room to move in either
+			// direction before reaching a dead-zone boundary.
+			currentBounds.origin = compositionOrigin(for: subjectCenter)
 			currentSpeed = .zero
 			hasTrackedSubject = true
 		} else if let deltaTime = trackingDelta(at: compositionTime) {
@@ -231,7 +253,7 @@ public actor ShotTracker {
 			return (position, velocity)
 		}
 
-		if deltaTime > Self.maximumSpringStepDuration {
+		if deltaTime > maximumSpringStepDuration {
 			var position = position
 			var velocity = velocity
 			var remainingTime = deltaTime

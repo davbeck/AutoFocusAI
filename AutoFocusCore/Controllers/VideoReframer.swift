@@ -3,6 +3,21 @@ import CoreImage
 import Foundation
 import Vision
 
+private actor AdaptivePoseFrameProvider {
+	let analyzer: PoseVideoAnalyzer
+
+	init(url: URL, configuration: PoseVideoAnalysisConfiguration) {
+		self.analyzer = PoseVideoAnalyzer(
+			asset: AVURLAsset(url: url),
+			configuration: configuration,
+		)
+	}
+
+	func frames(at times: [CMTime]) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
+		try await analyzer.process(at: times)
+	}
+}
+
 public struct ReframingConfiguration: Sendable {
 	public static let defaultTrackingFramesPerSecond = 8.0
 
@@ -22,9 +37,12 @@ public struct ReframingConfiguration: Sendable {
 }
 
 public struct ReframingSourceAnalysis: Sendable {
+	typealias PoseFrameProvider = @Sendable ([CMTime]) async throws -> [FrameData<[HumanBodyPoseObservation]>]
+
 	public var sourceSize: CGSize
 	public var poseFrames: [FrameData<[HumanBodyPoseObservation]>]
 	public var timeRange: CMTimeRange?
+	var poseFrameProvider: PoseFrameProvider?
 
 	public init(
 		sourceSize: CGSize,
@@ -34,6 +52,19 @@ public struct ReframingSourceAnalysis: Sendable {
 		self.sourceSize = sourceSize
 		self.poseFrames = poseFrames
 		self.timeRange = timeRange
+		self.poseFrameProvider = nil
+	}
+
+	init(
+		sourceSize: CGSize,
+		poseFrames: [FrameData<[HumanBodyPoseObservation]>],
+		timeRange: CMTimeRange?,
+		poseFrameProvider: @escaping PoseFrameProvider,
+	) {
+		self.sourceSize = sourceSize
+		self.poseFrames = poseFrames
+		self.timeRange = timeRange
+		self.poseFrameProvider = poseFrameProvider
 	}
 }
 
@@ -209,6 +240,57 @@ public struct VideoReframer {
 		var area: CGFloat
 	}
 
+	struct CropAnimation: Sendable {
+		var startTime: CMTime
+		var endTime: CMTime
+		var startOrigin: CGPoint
+		var endOrigin: CGPoint
+
+		func origin(at time: CMTime) -> CGPoint {
+			guard endTime > startTime else { return endOrigin }
+			let linearProgress = max(
+				0,
+				min(1, (time - startTime).seconds / (endTime - startTime).seconds),
+			)
+			let progress = CGFloat(linearProgress * linearProgress * (3 - 2 * linearProgress))
+			return CGPoint(
+				x: startOrigin.x + (endOrigin.x - startOrigin.x) * progress,
+				y: startOrigin.y + (endOrigin.y - startOrigin.y) * progress,
+			)
+		}
+	}
+
+	struct CropMotionPlan: Sendable {
+		var initialOrigin: CGPoint
+		var acquisitionTime: CMTime?
+		var acquisitionOrigin: CGPoint?
+		var animations: [CropAnimation]
+
+		func origin(at time: CMTime) -> CGPoint {
+			guard
+				let acquisitionTime,
+				let acquisitionOrigin,
+				time >= acquisitionTime
+			else {
+				return initialOrigin
+			}
+
+			var origin = acquisitionOrigin
+			for animation in animations {
+				if time < animation.startTime {
+					return origin
+				}
+				if time <= animation.endTime {
+					return animation.origin(at: time)
+				}
+				origin = animation.endOrigin
+			}
+			return origin
+		}
+	}
+
+	typealias SubjectCenterProvider = @Sendable (CMTime, CGPoint) async throws -> CGPoint?
+
 	public let configuration: ReframingConfiguration
 
 	public init(configuration: ReframingConfiguration = .init()) {
@@ -236,11 +318,12 @@ public struct VideoReframer {
 			requestedTimeRange: configuration.poseAnalysisConfiguration.timeRange,
 		)
 		await progressHandler?(.init(stage: .poseDetection, fractionCompleted: 0))
-		let poseFrames = try await PoseVideoAnalyzer(
+		let analyzer = PoseVideoAnalyzer(
 			asset: asset,
 			videoTrack: track,
 			configuration: configuration.poseAnalysisConfiguration,
-		).process { progress in
+		)
+		let poseFrames = try await analyzer.process { progress in
 			await progressHandler?(
 				.init(
 					stage: .poseDetection,
@@ -248,12 +331,26 @@ public struct VideoReframer {
 				),
 			)
 		}
-
-		return ReframingSourceAnalysis(
-			sourceSize: sourceSize,
-			poseFrames: poseFrames,
-			timeRange: timeRange,
-		)
+		if let urlAsset = asset as? AVURLAsset {
+			let adaptivePoseFrameProvider = AdaptivePoseFrameProvider(
+				url: urlAsset.url,
+				configuration: configuration.poseAnalysisConfiguration,
+			)
+			return ReframingSourceAnalysis(
+				sourceSize: sourceSize,
+				poseFrames: poseFrames,
+				timeRange: timeRange,
+				poseFrameProvider: { times in
+					try await adaptivePoseFrameProvider.frames(at: times)
+				},
+			)
+		} else {
+			return ReframingSourceAnalysis(
+				sourceSize: sourceSize,
+				poseFrames: poseFrames,
+				timeRange: timeRange,
+			)
+		}
 	}
 
 	public func reframe(
@@ -270,7 +367,7 @@ public struct VideoReframer {
 		var continuityMissCount = 0
 		let trackingCount = max(sourceAnalysis.poseFrames.count, 1)
 		let trackingInterval = Self.trackingInterval(forFramesPerSecond: configuration.trackingFramesPerSecond)
-		let maximumSubjectJumpDistance = outputSize.width
+		let maximumSubjectJumpDistance = Self.maximumSubjectJumpDistance(for: outputSize)
 
 		for (index, frame) in sourceAnalysis.poseFrames.enumerated() {
 			try Task.checkCancellation()
@@ -307,10 +404,24 @@ public struct VideoReframer {
 			throw VideoReframerError.noDetectedSubject
 		}
 
-		let shotStates = await Self.trackShotStates(
+		let subjectCenterProvider: SubjectCenterProvider? = sourceAnalysis.poseFrameProvider.map { poseFrameProvider in
+			{ @Sendable time, preferredCenter in
+				guard let frame = try await poseFrameProvider([time]).first else { return nil }
+				let pose = Self.primaryPose(
+					in: frame.value,
+					sourceSize: sourceSize,
+					preferredCenter: preferredCenter,
+					maximumDistance: maximumSubjectJumpDistance,
+				)
+				return await tracker.subjectCenter(for: pose)
+			}
+		}
+
+		let shotStates = try await Self.trackShotStates(
 			selectedPoseFrames,
 			tracker: tracker,
 			trackingInterval: trackingInterval,
+			subjectCenterProvider: subjectCenterProvider,
 		)
 
 		return ReframingAnalysis(
@@ -537,32 +648,278 @@ public struct VideoReframer {
 		_ selectedPoseFrames: [FrameData<HumanBodyPoseObservation?>],
 		tracker: ShotTracker,
 		trackingInterval: CMTime,
-	) async -> [FrameData<ShotState>] {
-		guard let firstFrame = selectedPoseFrames.first else { return [] }
+		subjectCenterProvider: SubjectCenterProvider? = nil,
+	) async throws -> [FrameData<ShotState>] {
+		var subjectFrames: [FrameData<CGPoint?>] = []
+		for frame in selectedPoseFrames {
+			await subjectFrames.append(FrameData(
+				presentationTime: frame.presentationTime,
+				value: tracker.subjectCenter(for: frame.value),
+			))
+		}
+		return try await trackSubjectCenters(
+			subjectFrames,
+			tracker: tracker,
+			trackingInterval: trackingInterval,
+			subjectCenterProvider: subjectCenterProvider,
+		)
+	}
 
-		var shotStates = [
+	static func trackSubjectCenters(
+		_ subjectFrames: [FrameData<CGPoint?>],
+		tracker: ShotTracker,
+		trackingInterval: CMTime,
+		subjectCenterProvider: SubjectCenterProvider? = nil,
+	) async throws -> [FrameData<ShotState>] {
+		guard let firstFrame = subjectFrames.first else { return [] }
+
+		var shotStates = await [
 			FrameData(
 				presentationTime: firstFrame.presentationTime,
-				value: await tracker.track(firstFrame.value, at: firstFrame.presentationTime),
+				value: tracker.track(subjectCenter: firstFrame.value, at: firstFrame.presentationTime),
 			),
 		]
+		let motionPlan = try await cropMotionPlan(
+			for: subjectFrames,
+			tracker: tracker,
+			initialOrigin: shotStates[0].value.bounds.origin,
+			precision: trackingInterval,
+			subjectCenterProvider: subjectCenterProvider,
+		)
 
-		for (previousFrame, nextFrame) in zip(selectedPoseFrames, selectedPoseFrames.dropFirst()) {
+		for (previousFrame, nextFrame) in zip(subjectFrames, subjectFrames.dropFirst()) {
 			for presentationTime in trackingTimes(
 				from: previousFrame.presentationTime,
 				to: nextFrame.presentationTime,
 				interval: trackingInterval,
 			) {
-				shotStates.append(
+				let subjectCenter: CGPoint?
+				if let previous = previousFrame.value, let next = nextFrame.value {
+					// Sparse detections describe positions at their own timestamps.
+					// Feeding the next pose to every spring step completes the pan early.
+					let progress = CGFloat(
+						(presentationTime - previousFrame.presentationTime).seconds
+							/ (nextFrame.presentationTime - previousFrame.presentationTime).seconds,
+					)
+					subjectCenter = CGPoint(
+						x: previous.x + (next.x - previous.x) * progress,
+						y: previous.y + (next.y - previous.y) * progress,
+					)
+				} else {
+					// Do not invent a path through a missing detection or acquire a
+					// future subject before its first observed timestamp.
+					subjectCenter = presentationTime < nextFrame.presentationTime ? previousFrame.value : nextFrame.value
+				}
+				let framingOrigin = motionPlan.origin(at: presentationTime)
+				await shotStates.append(
 					FrameData(
 						presentationTime: presentationTime,
-						value: await tracker.track(nextFrame.value, at: presentationTime),
+						value: tracker.track(subjectCenter: subjectCenter, at: presentationTime, framingOrigin: framingOrigin),
 					),
 				)
 			}
 		}
 
 		return shotStates
+	}
+
+	static func cropMotionPlan(
+		for subjectFrames: [FrameData<CGPoint?>],
+		tracker: ShotTracker,
+		initialOrigin: CGPoint,
+		precision: CMTime,
+		subjectCenterProvider: SubjectCenterProvider? = nil,
+	) async throws -> CropMotionPlan {
+		let motionFrames = subjectFrames.filter { $0.value != nil }
+		guard let acquisitionFrame = motionFrames.first,
+		      let acquisitionCenter = acquisitionFrame.value
+		else {
+			return CropMotionPlan(
+				initialOrigin: initialOrigin,
+				acquisitionTime: nil,
+				acquisitionOrigin: nil,
+				animations: [],
+			)
+		}
+
+		let acquisitionOrigin = await tracker.compositionOrigin(for: acquisitionCenter)
+		var animations: [CropAnimation] = []
+		var plannedOrigin = acquisitionOrigin
+		var index = 1
+		let continuationThreshold = min(
+			tracker.targetOutput.width,
+			tracker.targetOutput.height,
+		) * 0.02
+
+		while index < motionFrames.count {
+			guard
+				let previousCenter = motionFrames[index - 1].value,
+				let center = motionFrames[index].value
+			else {
+				index += 1
+				continue
+			}
+
+			let proposedOrigin = await tracker.framingOrigin(for: center, relativeTo: plannedOrigin)
+			let initialMovement = proposedOrigin - plannedOrigin
+			guard initialMovement.length > 0.5 else {
+				index += 1
+				continue
+			}
+
+			let startTime = try await cropAnimationStartTime(
+				from: motionFrames[index - 1].presentationTime,
+				center: previousCenter,
+				to: motionFrames[index].presentationTime,
+				center: center,
+				framingOrigin: plannedOrigin,
+				tracker: tracker,
+				precision: precision,
+				movementThreshold: continuationThreshold,
+				subjectCenterProvider: subjectCenterProvider,
+			)
+			var endIndex = index
+			var endOrigin = proposedOrigin
+
+			while endIndex + 1 < motionFrames.count,
+			      let nextCenter = motionFrames[endIndex + 1].value
+			{
+				let nextOrigin = await tracker.framingOrigin(for: nextCenter, relativeTo: plannedOrigin)
+				let continuation = nextOrigin - endOrigin
+				guard continuation.length > continuationThreshold,
+				      continuation.dot(initialMovement) > 0
+				else {
+					break
+				}
+				endIndex += 1
+				endOrigin = nextOrigin
+			}
+
+			let endTime = if endIndex > 0 {
+				try await cropAnimationEndTime(
+					from: motionFrames[endIndex - 1],
+					to: motionFrames[endIndex],
+					framingOrigin: plannedOrigin,
+					endOrigin: endOrigin,
+					tracker: tracker,
+					precision: precision,
+					continuationThreshold: continuationThreshold,
+					subjectCenterProvider: subjectCenterProvider,
+				)
+			} else {
+				motionFrames[endIndex].presentationTime
+			}
+
+			animations.append(CropAnimation(
+				startTime: startTime,
+				endTime: endTime,
+				startOrigin: plannedOrigin,
+				endOrigin: endOrigin,
+			))
+			plannedOrigin = endOrigin
+			index = endIndex + 1
+		}
+
+		return CropMotionPlan(
+			initialOrigin: initialOrigin,
+			acquisitionTime: acquisitionFrame.presentationTime,
+			acquisitionOrigin: acquisitionOrigin,
+			animations: animations,
+		)
+	}
+
+	private static func cropAnimationStartTime(
+		from startTime: CMTime,
+		center startCenter: CGPoint,
+		to endTime: CMTime,
+		center endCenter: CGPoint,
+		framingOrigin: CGPoint,
+		tracker: ShotTracker,
+		precision: CMTime,
+		movementThreshold: CGFloat,
+		subjectCenterProvider: SubjectCenterProvider?,
+	) async throws -> CMTime {
+		guard endTime > startTime else { return endTime }
+		let startOrigin = await tracker.framingOrigin(for: startCenter, relativeTo: framingOrigin)
+		if (startOrigin - framingOrigin).length > 0.5 {
+			return startTime
+		}
+
+		var lowerBound = startTime
+		var upperBound = endTime
+		let expectedMovement = endCenter - startCenter
+		let precisionSeconds = max(precision.seconds, 1.0 / 60.0)
+		while (upperBound - lowerBound).seconds > precisionSeconds {
+			let midpoint = lowerBound + CMTimeMultiplyByFloat64(upperBound - lowerBound, multiplier: 0.5)
+			let progress = CGFloat((midpoint - startTime).seconds / (endTime - startTime).seconds)
+			let estimatedCenter = CGPoint(
+				x: startCenter.x + (endCenter.x - startCenter.x) * progress,
+				y: startCenter.y + (endCenter.y - startCenter.y) * progress,
+			)
+			let center: CGPoint
+			if let subjectCenterProvider {
+				guard let detectedCenter = try await subjectCenterProvider(midpoint, estimatedCenter) else {
+					upperBound = midpoint
+					continue
+				}
+				center = detectedCenter
+			} else {
+				center = estimatedCenter
+			}
+			let movement = center - startCenter
+			if movement.length > movementThreshold, movement.dot(expectedMovement) > 0 {
+				upperBound = midpoint
+			} else {
+				lowerBound = midpoint
+			}
+		}
+		return upperBound
+	}
+
+	private static func cropAnimationEndTime(
+		from startFrame: FrameData<CGPoint?>,
+		to endFrame: FrameData<CGPoint?>,
+		framingOrigin: CGPoint,
+		endOrigin: CGPoint,
+		tracker: ShotTracker,
+		precision: CMTime,
+		continuationThreshold: CGFloat,
+		subjectCenterProvider: SubjectCenterProvider?,
+	) async throws -> CMTime {
+		guard
+			let startCenter = startFrame.value,
+			let endCenter = endFrame.value,
+			endFrame.presentationTime > startFrame.presentationTime,
+			let subjectCenterProvider
+		else {
+			return endFrame.presentationTime
+		}
+
+		var lowerBound = startFrame.presentationTime
+		var upperBound = endFrame.presentationTime
+		let precisionSeconds = max(precision.seconds, 1.0 / 60.0)
+		while (upperBound - lowerBound).seconds > precisionSeconds {
+			let midpoint = lowerBound + CMTimeMultiplyByFloat64(upperBound - lowerBound, multiplier: 0.5)
+			let progress = CGFloat(
+				(midpoint - startFrame.presentationTime).seconds
+					/ (endFrame.presentationTime - startFrame.presentationTime).seconds,
+			)
+			let estimatedCenter = CGPoint(
+				x: startCenter.x + (endCenter.x - startCenter.x) * progress,
+				y: startCenter.y + (endCenter.y - startCenter.y) * progress,
+			)
+			guard let center = try await subjectCenterProvider(midpoint, estimatedCenter) else {
+				lowerBound = midpoint
+				continue
+			}
+			let origin = await tracker.framingOrigin(for: center, relativeTo: framingOrigin)
+			if (origin - endOrigin).length <= continuationThreshold {
+				upperBound = midpoint
+			} else {
+				lowerBound = midpoint
+			}
+		}
+		return upperBound
 	}
 
 	@concurrent
@@ -776,6 +1133,10 @@ public struct VideoReframer {
 			.index
 	}
 
+	static func maximumSubjectJumpDistance(for outputSize: CGSize) -> CGFloat {
+		hypot(outputSize.width, outputSize.height)
+	}
+
 	private static func boundingRect(for pose: HumanBodyPoseObservation, sourceSize: CGSize) -> CGRect {
 		let points = pose.allJoints().values.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
 		return CGRect.boundingRect(of: points)
@@ -798,5 +1159,19 @@ private extension CGRect {
 			width: size.width + (other.size.width - size.width) * progress,
 			height: size.height + (other.size.height - size.height) * progress,
 		)
+	}
+}
+
+private extension CGPoint {
+	static func - (lhs: CGPoint, rhs: CGPoint) -> CGPoint {
+		CGPoint(x: lhs.x - rhs.x, y: lhs.y - rhs.y)
+	}
+
+	var length: CGFloat {
+		hypot(x, y)
+	}
+
+	func dot(_ other: CGPoint) -> CGFloat {
+		x * other.x + y * other.y
 	}
 }

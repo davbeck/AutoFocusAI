@@ -136,6 +136,49 @@ public struct PoseVideoAnalyzer {
 		return frames
 	}
 
+	func process(at requestedTimes: [CMTime]) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
+		guard !requestedTimes.isEmpty else { return [] }
+
+		let track: AVAssetTrack
+		if let videoTrack {
+			track = videoTrack
+		} else {
+			guard let loadedTrack = try await asset.loadTracks(withMediaType: .video).first else {
+				throw Error.noVideoTrackFound
+			}
+			track = loadedTrack
+		}
+		let (nominalFrameRate, naturalSize, preferredTransform, trackTimeRange) = try await track.load(
+			.nominalFrameRate,
+			.naturalSize,
+			.preferredTransform,
+			.timeRange,
+		)
+		let timeRange = try Self.resolvedTimeRange(
+			availableTimeRange: trackTimeRange,
+			requestedTimeRange: configuration.timeRange,
+		)
+		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
+		let detectionSize = Self.detectionSize(
+			for: sourceSize,
+			maximumLongEdge: configuration.maximumDetectionLongEdge,
+		)
+		let sampleInterval = Self.sampleInterval(
+			forNominalFrameRate: nominalFrameRate,
+			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
+		)
+
+		return try await processIndividualFrames(
+			at: requestedTimes.filter { $0 >= timeRange.start && $0 < timeRange.end },
+			sampleInterval: sampleInterval,
+			nominalFrameRate: nominalFrameRate,
+			timeRange: timeRange,
+			detectionSize: detectionSize,
+			restrictsToTimeRange: true,
+			progressHandler: nil,
+		)
+	}
+
 	public static func resolvedTimeRange(
 		availableTimeRange: CMTimeRange,
 		requestedTimeRange: CMTimeRange?,

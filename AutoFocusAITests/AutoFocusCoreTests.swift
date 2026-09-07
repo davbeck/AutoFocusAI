@@ -394,7 +394,7 @@ struct AutoFocusCoreTests {
 
 	@Test
 	func shotTrackerSpringStepDoesNotOscillateOnSparseSamples() {
-		let target = CGPoint(x: 1_030, y: 0)
+		let target = CGPoint(x: 1030, y: 0)
 		let firstStep = ShotTracker.springStep(
 			position: CGPoint(x: 794.4, y: 0),
 			velocity: .zero,
@@ -445,7 +445,7 @@ struct AutoFocusCoreTests {
 		let index = VideoReframer.selectedPoseCandidateIndex(
 			in: [
 				.init(index: 0, center: CGPoint(x: 110, y: 100), area: 100),
-				.init(index: 1, center: CGPoint(x: 900, y: 100), area: 1_000),
+				.init(index: 1, center: CGPoint(x: 900, y: 100), area: 1000),
 			],
 			preferredCenter: CGPoint(x: 100, y: 100),
 			maximumDistance: 300,
@@ -458,13 +458,28 @@ struct AutoFocusCoreTests {
 	func poseSelectionRejectsImplausibleContinuityJump() {
 		let index = VideoReframer.selectedPoseCandidateIndex(
 			in: [
-				.init(index: 0, center: CGPoint(x: 900, y: 100), area: 1_000),
+				.init(index: 0, center: CGPoint(x: 900, y: 100), area: 1000),
 			],
 			preferredCenter: CGPoint(x: 100, y: 100),
 			maximumDistance: 300,
 		)
 
 		#expect(index == nil)
+	}
+
+	@Test
+	func poseSelectionAllowsMovementAcrossHorizontalCropDiagonal() {
+		let index = VideoReframer.selectedPoseCandidateIndex(
+			in: [
+				.init(index: 0, center: CGPoint(x: 2079, y: 100), area: 1000),
+			],
+			preferredCenter: CGPoint(x: 100, y: 100),
+			maximumDistance: VideoReframer.maximumSubjectJumpDistance(
+				for: CGSize(width: 1920, height: 1080),
+			),
+		)
+
+		#expect(index == 0)
 	}
 
 	@Test
@@ -566,9 +581,9 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func trackShotStatesEmitsDenseSpringStatesBetweenPoseSamples() async {
+	func trackShotStatesEmitsDenseSpringStatesBetweenPoseSamples() async throws {
 		let tracker = ShotTracker(sourceSize: CGSize(width: 1920, height: 1080))
-		let shotStates = await VideoReframer.trackShotStates(
+		let shotStates = try await VideoReframer.trackShotStates(
 			[
 				FrameData<HumanBodyPoseObservation?>(
 					presentationTime: CMTime(seconds: 0, preferredTimescale: 600),
@@ -584,6 +599,238 @@ struct AutoFocusCoreTests {
 		)
 
 		#expect(shotStates.map(\.presentationTime.seconds) == [0, 0.25, 0.5, 0.75, 1])
+	}
+
+	@Test
+	func landscapeOpeningHoldsCompositionWhileSpeakerRaisesHead() async throws {
+		let states = try await landscapeTracking([
+			(0, CGPoint(x: 610, y: 1588)),
+			(5, CGPoint(x: 936, y: 1674)),
+		])
+		let first = try #require(states.first)
+		#expect(abs(first.value.bounds.minY - (1588 - 720)) < 0.01)
+		#expect(states.allSatisfy { abs($0.value.bounds.minY - first.value.bounds.minY) < 0.01 })
+	}
+
+	@Test
+	func landscapeAllowsSpeakerToMoveWithinMiddleHalfOfFrame() async throws {
+		let states = try await landscapeTracking([
+			(0, CGPoint(x: 1920, y: 1620)),
+			(5, CGPoint(x: 2320, y: 1620)),
+		])
+		#expect(states.allSatisfy { abs($0.value.bounds.minX - 960) < 0.01 })
+	}
+
+	@Test
+	func sparsePosesMoveAcrossTheirActualFiveSecondInterval() async throws {
+		let states = try await landscapeTracking([
+			(30, CGPoint(x: 2100, y: 1620)),
+			(35, CGPoint(x: 1200, y: 1620)),
+		])
+		let at31 = try #require(states.first { abs($0.presentationTime.seconds - 31) < 0.01 })
+		let at34 = try #require(states.first { abs($0.presentationTime.seconds - 34) < 0.01 })
+		#expect(try abs(#require(at31.value.subjectCenter).x - 1920) < 0.01)
+		#expect(try abs(#require(at34.value.subjectCenter).x - 1380) < 0.01)
+		#expect(at31.value.bounds.minX - at34.value.bounds.minX > 100)
+	}
+
+	@Test
+	func cropAnimationStartsNearBeginningOfInterpolatedMovement() async throws {
+		let tracker = ShotTracker(
+			sourceSize: CGSize(width: 3840, height: 2160),
+			outputSize: CGSize(width: 1920, height: 1080),
+		)
+		let plan = try await VideoReframer.cropMotionPlan(
+			for: subjectFrames([
+				(0, CGPoint(x: 1920, y: 1620)),
+				(5, CGPoint(x: 2880, y: 1620)),
+			]),
+			tracker: tracker,
+			initialOrigin: CGPoint(x: 960, y: 540),
+			precision: CMTime(seconds: 0.125, preferredTimescale: 600),
+		)
+
+		let animation = try #require(plan.animations.first)
+		#expect(plan.animations.count == 1)
+		#expect(animation.startTime.seconds >= 0.0)
+		#expect(animation.startTime.seconds <= 0.25)
+		#expect(animation.endTime.seconds == 5)
+		#expect(animation.startOrigin.x == 960)
+		#expect(animation.endOrigin.x == 1920)
+	}
+
+	@Test
+	func cropAnimationSpansContinuingMovementAndEndsAtFinalLocation() async throws {
+		let tracker = ShotTracker(
+			sourceSize: CGSize(width: 3840, height: 2160),
+			outputSize: CGSize(width: 1920, height: 1080),
+		)
+		let plan = try await VideoReframer.cropMotionPlan(
+			for: subjectFrames([
+				(0, CGPoint(x: 1920, y: 1620)),
+				(5, CGPoint(x: 2600, y: 1620)),
+				(10, CGPoint(x: 3000, y: 1620)),
+				(15, CGPoint(x: 3000, y: 1620)),
+			]),
+			tracker: tracker,
+			initialOrigin: CGPoint(x: 960, y: 540),
+			precision: CMTime(seconds: 0.125, preferredTimescale: 600),
+		)
+
+		let animation = try #require(plan.animations.first)
+		#expect(plan.animations.count == 1)
+		#expect(animation.endTime.seconds == 10)
+		#expect(animation.endOrigin.x == 1920)
+
+		let beforeBoundary = plan.origin(at: CMTime(seconds: 4.9, preferredTimescale: 600)).x
+		let atBoundary = plan.origin(at: CMTime(seconds: 5, preferredTimescale: 600)).x
+		let afterBoundary = plan.origin(at: CMTime(seconds: 5.1, preferredTimescale: 600)).x
+		#expect(beforeBoundary < atBoundary)
+		#expect(atBoundary < afterBoundary)
+		#expect(abs((atBoundary - beforeBoundary) - (afterBoundary - atBoundary)) < 1)
+	}
+
+	@Test
+	func cropAnimationRefinesMovementBoundariesFromVideoFrames() async throws {
+		let tracker = ShotTracker(
+			sourceSize: CGSize(width: 5000, height: 2160),
+			outputSize: CGSize(width: 1920, height: 1080),
+		)
+		let plan = try await VideoReframer.cropMotionPlan(
+			for: subjectFrames([
+				(0, CGPoint(x: 1920, y: 1620)),
+				(5, CGPoint(x: 2600, y: 1620)),
+				(10, CGPoint(x: 3000, y: 1620)),
+				(15, CGPoint(x: 3000, y: 1620)),
+			]),
+			tracker: tracker,
+			initialOrigin: CGPoint(x: 1540, y: 540),
+			precision: CMTime(seconds: 0.125, preferredTimescale: 600),
+			subjectCenterProvider: { time, _ in
+				let x = if time.seconds < 4 {
+					1920.0
+				} else if time.seconds < 5 {
+					1920 + (time.seconds - 4) * 680
+				} else if time.seconds < 8 {
+					2600 + (time.seconds - 5) / 3 * 400
+				} else {
+					3000.0
+				}
+				return CGPoint(x: x, y: 1620)
+			},
+		)
+
+		let animation = try #require(plan.animations.first)
+		#expect(animation.startTime.seconds >= 4)
+		#expect(animation.startTime.seconds <= 4.125)
+		#expect(animation.endTime.seconds >= 7.75)
+		#expect(animation.endTime.seconds <= 8)
+	}
+
+	@Test
+	func landscapePanLeavesRoomForSubsequentSmallMovements() async throws {
+		// Rounded composition anchors measured from TrackingExample.mov.
+		let states = try await landscapeTracking([
+			(0, CGPoint(x: 610, y: 1588)),
+			(5, CGPoint(x: 936, y: 1674)),
+			(10, CGPoint(x: 1932, y: 1646)),
+			(15, CGPoint(x: 1935, y: 1626)),
+			(20, CGPoint(x: 2107, y: 1638)),
+		])
+		let at15 = try #require(states.first { abs($0.presentationTime.seconds - 15) < 0.01 })
+		#expect(states.filter { $0.presentationTime.seconds >= 15 }.allSatisfy {
+			abs($0.value.bounds.minX - at15.value.bounds.minX) < 1
+		})
+	}
+
+	@Test
+	func missingPoseDoesNotAcquireFutureSubjectEarly() async throws {
+		let states = try await landscapeTracking([
+			(0, nil),
+			(5, CGPoint(x: 610, y: 1588)),
+			(10, nil),
+		])
+		#expect(states.filter { $0.presentationTime.seconds < 5 }.allSatisfy { $0.value.subjectCenter == nil })
+		let at5 = try #require(states.first { abs($0.presentationTime.seconds - 5) < 0.01 })
+		#expect(at5.value.subjectCenter != nil)
+		let at10 = try #require(states.last)
+		#expect(at10.value.subjectCenter == nil)
+	}
+
+	@Test
+	func cropAnimationBridgesMissingPoseSample() async throws {
+		let frames = subjectFrames([
+			(80, CGPoint(x: 3326, y: 1638)),
+			(85, nil),
+			(90, CGPoint(x: 1479, y: 1555)),
+			(95, CGPoint(x: 1802, y: 1754)),
+		])
+		let subjectCenterProvider: VideoReframer.SubjectCenterProvider = { time, _ in
+			if time.seconds < 82 {
+				return CGPoint(x: 3326, y: 1638)
+			} else if time.seconds < 88 {
+				return nil
+			} else {
+				return CGPoint(x: 1479, y: 1555)
+			}
+		}
+		let plan = try await VideoReframer.cropMotionPlan(
+			for: frames,
+			tracker: ShotTracker(
+				sourceSize: CGSize(width: 3840, height: 2160),
+				outputSize: CGSize(width: 1920, height: 1080),
+			),
+			initialOrigin: CGPoint(x: 1920, y: 916),
+			precision: CMTime(seconds: 0.125, preferredTimescale: 600),
+			subjectCenterProvider: subjectCenterProvider,
+		)
+
+		let animation = try #require(plan.animations.first)
+		#expect(animation.startTime.seconds >= 82)
+		#expect(animation.startTime.seconds <= 82.125)
+		#expect(animation.endTime.seconds >= 88)
+		#expect(animation.endTime.seconds <= 88.125)
+		#expect(plan.origin(at: CMTime(seconds: 83, preferredTimescale: 600)).x < 1920)
+
+		let states = try await VideoReframer.trackSubjectCenters(
+			frames,
+			tracker: ShotTracker(
+				sourceSize: CGSize(width: 3840, height: 2160),
+				outputSize: CGSize(width: 1920, height: 1080),
+			),
+			trackingInterval: CMTime(seconds: 0.125, preferredTimescale: 600),
+			subjectCenterProvider: subjectCenterProvider,
+		)
+		let at83 = try #require(states.first { $0.presentationTime.seconds >= 83 })
+		let at85 = try #require(states.first { $0.presentationTime.seconds >= 85 })
+		#expect(at83.value.bounds.minX < 1920)
+		#expect(at85.value.bounds.minX < at83.value.bounds.minX)
+	}
+
+	@Test
+	func landscapeHoldsVerticalFramingThroughBriefHeadDip() async throws {
+		let states = try await landscapeTracking([
+			(110, CGPoint(x: 1920, y: 1655)),
+			(115, CGPoint(x: 1920, y: 1645)),
+			(120, CGPoint(x: 1920, y: 1561)),
+			(125, CGPoint(x: 1920, y: 1709)),
+		])
+		let first = try #require(states.first)
+		#expect(states.allSatisfy { abs($0.value.bounds.minY - first.value.bounds.minY) < 0.01 })
+	}
+
+	private func landscapeTracking(_ centers: [(Double, CGPoint?)]) async throws -> [FrameData<ShotState>] {
+		try await VideoReframer.trackSubjectCenters(
+			subjectFrames(centers),
+			tracker: ShotTracker(sourceSize: CGSize(width: 3840, height: 2160), outputSize: CGSize(width: 1920, height: 1080)),
+			trackingInterval: CMTime(seconds: 0.125, preferredTimescale: 600),
+		)
+	}
+
+	private func subjectFrames(_ centers: [(Double, CGPoint?)]) -> [FrameData<CGPoint?>] {
+		centers.map { time, center in
+			FrameData(presentationTime: CMTime(seconds: time, preferredTimescale: 600), value: center)
+		}
 	}
 
 	@Test
