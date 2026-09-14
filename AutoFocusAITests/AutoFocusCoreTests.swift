@@ -635,6 +635,45 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func cropAnimationMatchesKeyframeSpeedThroughoutMovement() {
+		let animation = VideoReframer.CropAnimation(
+			startTime: CMTime(seconds: 4, preferredTimescale: 600),
+			endTime: CMTime(seconds: 8, preferredTimescale: 600),
+			startOrigin: CGPoint(x: 1600, y: 900),
+			endOrigin: CGPoint(x: 400, y: 500),
+		)
+
+		// A speaker moving 300 px/s horizontally and 100 px/s vertically
+		// should retain the same composition throughout the pan.
+		for step in 0 ... 16 {
+			let elapsed = Double(step) / 4
+			let origin = animation.origin(at: CMTime(seconds: 4 + elapsed, preferredTimescale: 600))
+			#expect(abs(origin.x - (1600 - 300 * elapsed)) < 0.01)
+			#expect(abs(origin.y - (900 - 100 * elapsed)) < 0.01)
+		}
+		#expect(abs(animation.origin(at: .zero).x - 1600) < 0.01)
+		#expect(abs(animation.origin(at: CMTime(seconds: 10, preferredTimescale: 600)).x - 400) < 0.01)
+	}
+
+	@Test
+	func plannedFastPanKeepsUpWithSpeakerAndStopsWithThem() async throws {
+		let states = try await landscapeTracking([
+			(0, CGPoint(x: 1500, y: 1620)),
+			(1, CGPoint(x: 2700, y: 1620)),
+			(2, CGPoint(x: 2700, y: 1620)),
+		])
+		let early = try #require(states.first { abs($0.presentationTime.seconds - 0.25) < 0.01 })
+		let late = try #require(states.first { abs($0.presentationTime.seconds - 0.75) < 0.01 })
+		// Boundary refinement is accurate to one tracking interval. Even a fast
+		// pan must follow the planned velocity without spring or easing lag.
+		#expect(early.value.bounds.minX > 650)
+		#expect(late.value.bounds.minX < 1450)
+		#expect(states.filter { $0.presentationTime.seconds >= 1 }.allSatisfy {
+			abs($0.value.bounds.minX - 1740) < 0.01
+		})
+	}
+
+	@Test
 	func cropAnimationStartsNearBeginningOfInterpolatedMovement() async throws {
 		let tracker = ShotTracker(
 			sourceSize: CGSize(width: 3840, height: 2160),

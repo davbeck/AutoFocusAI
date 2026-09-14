@@ -248,11 +248,12 @@ public struct VideoReframer {
 
 		func origin(at time: CMTime) -> CGPoint {
 			guard endTime > startTime else { return endOrigin }
-			let linearProgress = max(
+			// Movement boundaries already determine the pan's duration. Follow
+			// their implied velocity instead of easing behind a moving speaker.
+			let progress = CGFloat(max(
 				0,
 				min(1, (time - startTime).seconds / (endTime - startTime).seconds),
-			)
-			let progress = CGFloat(linearProgress * linearProgress * (3 - 2 * linearProgress))
+			))
 			return CGPoint(
 				x: startOrigin.x + (endOrigin.x - startOrigin.x) * progress,
 				y: startOrigin.y + (endOrigin.y - startOrigin.y) * progress,
