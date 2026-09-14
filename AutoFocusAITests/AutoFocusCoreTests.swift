@@ -279,6 +279,68 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
+	func cropKeyframesFileIncludesMultipleOutputConfigurations() throws {
+		let timelineOrigin = CMTime(seconds: 4, preferredTimescale: 600)
+		let timeRange = CMTimeRange(
+			start: CMTime(seconds: 14, preferredTimescale: 600),
+			end: CMTime(seconds: 24, preferredTimescale: 600),
+		)
+		let analyses = [
+			ReframingAnalysis(
+				sourceSize: CGSize(width: 3840, height: 2160),
+				renderSize: CGSize(width: 1920, height: 1080),
+				shotStates: [
+					FrameData(
+						presentationTime: CMTime(seconds: 14, preferredTimescale: 600),
+						value: ShotState(
+							bounds: CGRect(x: 120, y: 240, width: 1920, height: 1080),
+							target: .zero,
+							subjectCenter: nil,
+						),
+					),
+				],
+			),
+			ReframingAnalysis(
+				sourceSize: CGSize(width: 3840, height: 2160),
+				renderSize: CGSize(width: 1080, height: 1920),
+				shotStates: [
+					FrameData(
+						presentationTime: CMTime(seconds: 19, preferredTimescale: 600),
+						value: ShotState(
+							bounds: CGRect(x: 360, y: 120, width: 1080, height: 1920),
+							target: .zero,
+							subjectCenter: nil,
+						),
+					),
+				],
+			),
+		]
+
+		let file = CropKeyframesFile(
+			analyses: analyses,
+			timeRange: timeRange,
+			timelineOrigin: timelineOrigin,
+		)
+
+		#expect(file.schemaVersion == 1)
+		#expect(file.coordinateSystem == "source pixels, upper-left origin")
+		#expect(file.sourceWidth == 3840)
+		#expect(file.sourceHeight == 2160)
+		#expect(file.timeRange.startTime == 10)
+		#expect(file.timeRange.endTime == 20)
+		#expect(file.configurations.count == 2)
+		#expect(file.configurations[0].outputWidth == 1920)
+		#expect(file.configurations[0].outputHeight == 1080)
+		#expect(file.configurations[0].keyframes[0].timestamp == 10)
+		#expect(file.configurations[0].keyframes[0].x == 120)
+		#expect(file.configurations[0].keyframes[0].y == 840)
+		#expect(file.configurations[1].outputWidth == 1080)
+		#expect(file.configurations[1].outputHeight == 1920)
+		#expect(file.configurations[1].keyframes[0].timestamp == 15)
+		#expect(file.configurations[1].keyframes[0].y == 120)
+	}
+
+	@Test
 	func reframingTracksSpringAtEightFramesPerSecondByDefault() {
 		#expect(ReframingConfiguration().trackingFramesPerSecond == 8)
 		#expect(VideoReframer.trackingInterval(forFramesPerSecond: 8).seconds == 0.125)

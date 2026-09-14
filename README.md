@@ -59,6 +59,21 @@ export video:
 afai input.mov --pose-data poses.json --pose-interval 5 --start-time 60 --end-time 120
 ```
 
+Use `--keyframes` to write tracked crop bounds as JSON instead of exporting a
+video. Repeat `--resolution` to generate keyframes for multiple output
+configurations from one pose-analysis pass:
+
+```sh
+afai input.mov --keyframes crops.json \
+  --resolution 1920x1080 \
+  --resolution 1080x1920 \
+  --resolution 720x1280
+```
+
+Each configuration contains its resolved native output dimensions and a list of
+video-relative timestamps with crop rectangles in source-pixel coordinates,
+using an upper-left origin.
+
 Sparse sampling uses individual timestamp extraction so the decoder can skip
 most of the video. Dense sampling over a sufficiently long range switches to a
 sequential asset reader to avoid repeated seek overhead.

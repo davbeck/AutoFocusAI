@@ -50,7 +50,7 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	@Argument(help: "Path to the source video file.")
 	var input: String
 
-	@Argument(help: "Path where the cropped output video should be written. Omit when using --pose-data.")
+	@Argument(help: "Path where the cropped output video should be written. Omit when exporting JSON data.")
 	var output: String?
 
 	@Option(help: "Seconds between pose detections.")
@@ -65,8 +65,11 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	@Option(help: "Write raw pose observations as JSON to this path instead of exporting video.")
 	var poseData: String?
 
+	@Option(help: "Write crop keyframes as JSON to this path instead of exporting video.")
+	var keyframes: String?
+
 	@Option(help: "Native output crop: 9:16-max, 1920x1080, 1080x1920, or a custom WIDTHxHEIGHT.")
-	var resolution = OutputResolution(.maximum9By16)
+	var resolution: [OutputResolution] = []
 
 	@Flag(help: "Print crop bounds and subject position for each tracked frame before exporting.")
 	var debug = false
@@ -84,16 +87,22 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 		if let startTime, let endTime, endTime <= startTime {
 			throw ValidationError("--end-time must be later than --start-time.")
 		}
-		if poseData == nil, output == nil {
-			throw ValidationError("Provide an output video path or use --pose-data <json-path>.")
+		let outputModeCount = [output, poseData, keyframes].compactMap(\.self).count
+		if outputModeCount == 0 {
+			throw ValidationError("Provide an output video path, --pose-data <json-path>, or --keyframes <json-path>.")
 		}
-		if poseData != nil, output != nil {
-			throw ValidationError("Omit the output video path when using --pose-data.")
+		if outputModeCount > 1 {
+			throw ValidationError("Choose exactly one output video path, --pose-data, or --keyframes.")
 		}
-		do {
-			try resolution.outputSize.validate()
-		} catch {
-			throw ValidationError(Self.presentationText(for: error))
+		if keyframes == nil, resolution.count > 1 {
+			throw ValidationError("Multiple --resolution values are supported only with --keyframes.")
+		}
+		for resolution in resolvedResolutions {
+			do {
+				try resolution.outputSize.validate()
+			} catch {
+				throw ValidationError(Self.presentationText(for: error))
+			}
 		}
 	}
 
@@ -146,6 +155,53 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 			return
 		}
 
+		if let keyframes {
+			let keyframesURL = try validatedOutputURL(for: keyframes, inputURL: inputURL)
+			let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
+			let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+			let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
+			for resolution in resolvedResolutions {
+				do {
+					_ = try resolution.outputSize.resolve(for: sourceSize)
+				} catch {
+					throw ValidationError(Self.presentationText(for: error))
+				}
+			}
+
+			print("Analyzing \(inputURL.lastPathComponent)...")
+			let sourceAnalysis = try await VideoReframer(
+				configuration: .init(
+					outputSize: resolvedResolutions[0].outputSize,
+					poseAnalysisConfiguration: poseConfiguration,
+				),
+			).analyzeSource(asset: asset)
+			var analyses: [ReframingAnalysis] = []
+			analyses.reserveCapacity(resolvedResolutions.count)
+			for resolution in resolvedResolutions {
+				let reframer = VideoReframer(
+					configuration: .init(
+						outputSize: resolution.outputSize,
+						poseAnalysisConfiguration: poseConfiguration,
+					),
+				)
+				let analysis = try await reframer.reframe(sourceAnalysis)
+				analyses.append(analysis)
+			}
+
+			let keyframesFile = CropKeyframesFile(
+				analyses: analyses,
+				timeRange: selectedTimeRange,
+				timelineOrigin: trackTimeRange.start,
+			)
+			let encoder = JSONEncoder()
+			encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+			try encoder.encode(keyframesFile).write(to: keyframesURL, options: .atomic)
+			print(
+				"Wrote keyframes for \(analyses.count) output configuration\(analyses.count == 1 ? "" : "s") to \(keyframesURL.path)",
+			)
+			return
+		}
+
 		guard let output else {
 			throw ValidationError("Provide an output video path.")
 		}
@@ -154,13 +210,13 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 		let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
 		let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
 		do {
-			_ = try resolution.outputSize.resolve(for: sourceSize)
+			_ = try resolvedResolutions[0].outputSize.resolve(for: sourceSize)
 		} catch {
 			throw ValidationError(Self.presentationText(for: error))
 		}
 		let reframer = VideoReframer(
 			configuration: .init(
-				outputSize: resolution.outputSize,
+				outputSize: resolvedResolutions[0].outputSize,
 				poseAnalysisConfiguration: poseConfiguration,
 			),
 		)
@@ -249,6 +305,10 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 
 	private static func formatted(_ seconds: Double) -> String {
 		seconds.formatted(.number.precision(.fractionLength(0 ... 3)))
+	}
+
+	private var resolvedResolutions: [OutputResolution] {
+		resolution.isEmpty ? [OutputResolution(.maximum9By16)] : resolution
 	}
 
 	private static func presentationText(for error: any Error) -> String {
