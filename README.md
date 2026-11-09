@@ -51,6 +51,35 @@ afai input.mov landscape.mov --resolution 1920x1080
 afai input.mov custom.mov --resolution 720x1280
 ```
 
+Provide multiple output paths and the same number of `--resolution` values, in
+matching order, to analyze one source and render several crops:
+
+```sh
+afai Sermon-Wide.mov Sermon-Close-Up.mov Sermon-Vertical.mov \
+  --resolution 1920x1080 --resolution 1080x1920 --pose-interval 1
+```
+
+The initial pose-detection pass runs once. Crop calculation runs independently
+for each shape, while additional observations used to refine movement boundaries
+are shared by source timestamp. This is an in-memory workflow for one invocation;
+`--pose-data` remains an inspection export, not an input cache for later renders.
+Both outputs use the same selected source-time range and elapsed timing, with
+native source pixels and no scaling. Video-only sources remain video-only.
+
+For a short tracking review around source 301 seconds:
+
+```sh
+afai Sermon-Wide.mov /tmp/Close-Up-test.mov /tmp/Vertical-test.mov \
+  --resolution 1920x1080 --resolution 1080x1920 \
+  --pose-interval 1 --start-time 280 --end-time 320
+```
+
+Reconstruct accidental file splits into each logical section at original
+resolution **before** running this command. Track Scripture Reading and Sermon
+as separate sections; concatenating independently tracked crops can reset framing
+at the joins. Import the wide original separately in Descript. Do not apply a
+capture-specific soundboard offset or speed correction in AutoFocusAI.
+
 Use `--pose-data` in place of the output-video argument to write every detected
 pose and its normalized Vision joints to JSON. This mode does not reframe or
 export video:
