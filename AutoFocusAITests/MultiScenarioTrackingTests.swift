@@ -4,11 +4,19 @@ import Testing
 @testable import AutoFocusCore
 
 struct MultiScenarioTrackingTests {
-	@Test(arguments: [CGSize(width: 1920, height: 1080), CGSize(width: 1080, height: 1920)])
-	func changingWalkingSpeedKeepsFaceInsideCrop(outputSize: CGSize) async throws {
+	@Test(
+		arguments: [CGSize(width: 1920, height: 1080), CGSize(width: 1080, height: 1920)],
+		[
+			[1000.0, 1800, 1900, 2000, 2000],
+			[2800.0, 2000, 1900, 1800, 1800],
+			[1000.0, 1100, 1200, 2000, 2000],
+			[2800.0, 2700, 2600, 1800, 1800],
+		],
+	)
+	func changingWalkingSpeedKeepsFaceInsideCrop(outputSize: CGSize, xs: [Double]) async throws {
 		// A fast first step followed by a slow continuation must not become
 		// one averaged-speed pan that lets the face outrun the portrait crop.
-		let states = try await track(xs: [1000, 1800, 1900, 2000, 2000], outputSize: outputSize)
+		let states = try await track(xs: xs, outputSize: outputSize)
 		for state in states {
 			let center = try #require(state.value.subjectCenter)
 			#expect(state.value.bounds.insetBy(dx: 90, dy: 90).contains(center))
