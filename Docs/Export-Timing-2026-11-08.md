@@ -60,13 +60,23 @@ track, and identical presentation timestamps. Every timestamp after the initial
 boundary matched its source timestamp minus 2970 seconds. This checks source-time
 selection late in the recording without a full-length render.
 
-`ExportTimingTests` generates small ProRes sources with integer, exact fractional,
-and variable cadence, then inspects actual exported samples. It checks presentation
+`ExportTimingTests` uses small bundled synthetic sources with integer, exact
+fractional, and variable cadence, then inspects actual exported samples. The
+[fixture provenance](../AutoFocusAITests/Fixtures/README.md) records generation
+commands and timing. It checks presentation
 timestamps and coverage, comparison composition timing, paired crop synchronization,
 frame-aligned and arbitrary subranges, a nonzero track origin, dimensions,
 translation-only native crop transforms, and video-only output. Empty reader marker
 buffers are excluded from frame counts; coverage is measured between presentation
 timestamps and the track's edited end.
+
+The fixtures have a distinct gray level for each frame. Decoded output markers
+are compared with the source markers as well as their presentation timestamps,
+so duplicated, dropped, or reordered frames are observable. They are bundled
+rather than encoded during tests because concurrent `AVAssetWriter` fixture
+generation was observed to stall with incomplete source movies on this
+macOS/Xcode combination. The exact AVFoundation cause was not established.
+The tests remain parallel and exercise real exports.
 
 Inspect an exported movie with:
 

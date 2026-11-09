@@ -5,28 +5,15 @@ import Testing
 @testable import AutoFocusCore
 
 struct ExportTimingTests {
-	private enum Cadence: CaseIterable, Sendable {
+	private enum Cadence: String, CaseIterable, Sendable {
 		case integer, fractional, variable
-
-		var durations: [CMTime] {
-			(0 ..< 90).map { index in
-				switch self {
-				case .integer:
-					CMTime(value: 1000, timescale: 30000)
-				case .fractional:
-					CMTime(value: 1001, timescale: 30000)
-				case .variable:
-					CMTime(value: [1001, 2002, 1001, 3003][index % 4], timescale: 30000)
-				}
-			}
-		}
 	}
 
 	@Test(arguments: Cadence.allCases)
 	private func cropExportPreservesSourcePresentationTimes(cadence: Cadence) async throws {
 		let directory = try makeDirectory()
 		defer { try? FileManager.default.removeItem(at: directory) }
-		let source = try await makeSource(at: directory.appendingPathComponent("source.mov"), durations: cadence.durations)
+		let source = try source(cadence: cadence)
 		let before = try await samples(in: source)
 		let reframer = VideoReframer()
 		let analysis = staticAnalysis()
@@ -35,6 +22,10 @@ struct ExportTimingTests {
 		let output = AVURLAsset(url: outputURL)
 		let after = try await samples(in: output)
 
+		let originalMarkers = try await frameMarkers(in: source)
+		let outputMarkers = try await frameMarkers(in: output)
+		#expect(outputMarkers.count == originalMarkers.count)
+		#expect(zip(outputMarkers, originalMarkers).allSatisfy { abs(Int($0) - Int($1)) <= 3 })
 		#expect(after.map(\.time) == before.map(\.time))
 		#expect(after.map(\.duration) == before.map(\.duration))
 		#expect(try await output.load(.duration) == source.load(.duration))
@@ -47,7 +38,7 @@ struct ExportTimingTests {
 	func comparisonExportPreservesFractionalSourcePresentationTimes() async throws {
 		let directory = try makeDirectory()
 		defer { try? FileManager.default.removeItem(at: directory) }
-		let source = try await makeSource(at: directory.appendingPathComponent("source.mov"), durations: Cadence.fractional.durations)
+		let source = try source(cadence: .fractional)
 		let sourceSamples = try await samples(in: source)
 		let comparison = try await VideoReframer.makeComparisonAsset(from: source)
 		let composition = try await VideoReframer().makeComparisonVideoComposition(asset: comparison, analysis: staticAnalysis())
@@ -66,7 +57,7 @@ struct ExportTimingTests {
 		let directory = try makeDirectory()
 		defer { try? FileManager.default.removeItem(at: directory) }
 		let frameDuration = CMTime(value: 1001, timescale: 30000)
-		let source = try await makeSource(at: directory.appendingPathComponent("source.mov"), durations: Cadence.fractional.durations)
+		let source = try source(cadence: .fractional)
 		let range = CMTimeRange(
 			start: CMTimeMultiply(frameDuration, multiplier: 11),
 			duration: CMTimeMultiply(frameDuration, multiplier: 61),
@@ -103,7 +94,7 @@ struct ExportTimingTests {
 	func nonzeroTrackOriginAndPartialFramesPreserveElapsedTime() async throws {
 		let directory = try makeDirectory()
 		defer { try? FileManager.default.removeItem(at: directory) }
-		let source = try await makeSource(at: directory.appendingPathComponent("source.mov"), durations: Cadence.fractional.durations)
+		let source = try source(cadence: .fractional)
 		let sourceTrack = try #require(await source.loadTracks(withMediaType: .video).first)
 		let composition = AVMutableComposition()
 		let track = try #require(composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid))
@@ -159,43 +150,36 @@ struct ExportTimingTests {
 		}
 	}
 
+	private func frameMarkers(in asset: AVAsset) async throws -> [UInt8] {
+		let track = try #require(await asset.loadTracks(withMediaType: .video).first)
+		let reader = try AVAssetReader(asset: asset)
+		let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+			kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+		])
+		reader.add(output)
+		#expect(reader.startReading())
+		var markers: [(CMTime, UInt8)] = []
+		while let sample = output.copyNextSampleBuffer() {
+			guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+			CVPixelBufferLockBaseAddress(buffer, .readOnly)
+			defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+			let address = try #require(CVPixelBufferGetBaseAddress(buffer))
+			markers.append((sample.presentationTimeStamp, address.load(as: UInt8.self)))
+		}
+		#expect(reader.status == .completed)
+		return markers.sorted { $0.0 < $1.0 }.map(\.1)
+	}
+
 	private func makeDirectory() throws -> URL {
 		let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 		return directory
 	}
 
-	private func makeSource(at url: URL, durations: [CMTime]) async throws -> AVURLAsset {
-		let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-		writer.movieTimeScale = 30000
-		let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-			AVVideoCodecKey: AVVideoCodecType.proRes422,
-			AVVideoWidthKey: 320,
-			AVVideoHeightKey: 240,
-		])
-		input.mediaTimeScale = 30000
-		let attributes = CVPixelBufferCreationAttributes(
-			pixelFormatType: .init(rawValue: kCVPixelFormatType_32BGRA),
-			size: .init(width: 320, height: 240),
-		)
-		let receiver = writer.inputPixelBufferReceiver(for: input, pixelBufferAttributes: attributes)
-		#expect(writer.startWriting())
-		writer.startSession(atSourceTime: .zero)
-		var time = CMTime.zero
-		for (index, duration) in durations.enumerated() {
-			var buffer = try CVMutablePixelBuffer(attributes)
-			buffer.accessUnsafeMutableRawPlaneBytes { planes in
-				for plane in planes {
-					plane.bytes.initializeMemory(as: UInt8.self, repeating: UInt8(index * 2))
-				}
-			}
-			try await receiver.append(CVReadOnlyPixelBuffer(buffer), with: time)
-			time = time + duration
-		}
-		writer.endSession(atSourceTime: time)
-		receiver.finish()
-		await writer.finishWriting()
-		#expect(writer.status == .completed)
+	private final class BundleToken {}
+
+	private func source(cadence: Cadence) throws -> AVURLAsset {
+		let url = try #require(Bundle(for: BundleToken.self).url(forResource: "timing-\(cadence.rawValue)", withExtension: "mov"))
 		return AVURLAsset(url: url)
 	}
 
