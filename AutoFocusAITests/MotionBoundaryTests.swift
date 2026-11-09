@@ -75,9 +75,9 @@ struct MotionBoundaryTests {
 			subjectCenterProvider: provider,
 		)
 
-		let animation = try #require(plan.animations.last)
-		#expect(animation.endTime > animation.startTime)
-		#expect(animation.startTime.seconds < 308)
+		let firstAnimation = try #require(plan.animations.first)
+		#expect(plan.animations.allSatisfy { $0.endTime > $0.startTime })
+		#expect(firstAnimation.startTime.seconds < 308)
 		let origins = (0 ... 40).map { step in
 			plan.origin(at: CMTime(seconds: 305 + Double(step) / 8, preferredTimescale: 600))
 		}

@@ -809,8 +809,7 @@ struct AutoFocusCoreTests {
 			precision: CMTime(seconds: 0.125, preferredTimescale: 600),
 		)
 
-		let animation = try #require(plan.animations.first)
-		#expect(plan.animations.count == 1)
+		let animation = try #require(plan.animations.last)
 		#expect(animation.endTime.seconds == 10)
 		#expect(animation.endOrigin.x == 1920)
 
@@ -819,7 +818,11 @@ struct AutoFocusCoreTests {
 		let afterBoundary = plan.origin(at: CMTime(seconds: 5.1, preferredTimescale: 600)).x
 		#expect(beforeBoundary < atBoundary)
 		#expect(atBoundary < afterBoundary)
-		#expect(abs((atBoundary - beforeBoundary) - (afterBoundary - atBoundary)) < 1)
+		// Position remains continuous while pan speed follows the observed
+		// faster first leg and slower continuation.
+		#expect(atBoundary - beforeBoundary > afterBoundary - atBoundary)
+		#expect(atBoundary - beforeBoundary < 20)
+		#expect(afterBoundary - atBoundary < 20)
 	}
 
 	@Test
@@ -852,11 +855,12 @@ struct AutoFocusCoreTests {
 			},
 		)
 
-		let animation = try #require(plan.animations.first)
-		#expect(animation.startTime.seconds >= 4)
-		#expect(animation.startTime.seconds <= 4.125)
-		#expect(animation.endTime.seconds >= 7.75)
-		#expect(animation.endTime.seconds <= 8)
+		let firstAnimation = try #require(plan.animations.first)
+		let lastAnimation = try #require(plan.animations.last)
+		#expect(firstAnimation.startTime.seconds >= 4)
+		#expect(firstAnimation.startTime.seconds <= 4.125)
+		#expect(lastAnimation.endTime.seconds >= 7.75)
+		#expect(lastAnimation.endTime.seconds <= 8)
 	}
 
 	@Test

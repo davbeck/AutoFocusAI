@@ -837,10 +837,33 @@ public struct VideoReframer {
 				motionFrames[endIndex].presentationTime
 			}
 
+			// Preserve changes in walking speed within a continuous pan. One
+			// average velocity across a fast departure and slow continuation
+			// can leave the crop behind the speaker even at observed timestamps.
+			let subjectMovement = motionFrames[endIndex].value! - startCenter
+			var segmentTime = startTime
+			var segmentOrigin = plannedOrigin
+			for frame in motionFrames[(startIndex + 1) ..< endIndex]
+				where frame.presentationTime > startTime && frame.presentationTime < endTime
+			{
+				let progress = min(1, max(0, (frame.value! - startCenter).dot(subjectMovement) / subjectMovement.dot(subjectMovement)))
+				let origin = CGPoint(
+					x: plannedOrigin.x + (endOrigin.x - plannedOrigin.x) * progress,
+					y: plannedOrigin.y + (endOrigin.y - plannedOrigin.y) * progress,
+				)
+				animations.append(CropAnimation(
+					startTime: segmentTime,
+					endTime: frame.presentationTime,
+					startOrigin: segmentOrigin,
+					endOrigin: origin,
+				))
+				segmentTime = frame.presentationTime
+				segmentOrigin = origin
+			}
 			animations.append(CropAnimation(
-				startTime: startTime,
+				startTime: segmentTime,
 				endTime: endTime,
-				startOrigin: plannedOrigin,
+				startOrigin: segmentOrigin,
 				endOrigin: endOrigin,
 			))
 			plannedOrigin = endOrigin
@@ -1108,17 +1131,18 @@ public struct VideoReframer {
 		}
 	}
 
-	private static func primaryPose(
+	static func primaryPose(
 		in poses: [HumanBodyPoseObservation],
 		sourceSize: CGSize,
 		preferredCenter: CGPoint?,
 		maximumDistance: CGFloat?,
 	) -> HumanBodyPoseObservation? {
-		let candidates = poses.enumerated().map { index, pose in
+		let candidates = poses.enumerated().compactMap { index, pose -> PoseCandidate? in
+			guard let center = ShotTracker.compositionAnchor(for: pose, sourceSize: sourceSize) else { return nil }
 			let rect = boundingRect(for: pose, sourceSize: sourceSize)
 			return PoseCandidate(
 				index: index,
-				center: CGPoint(x: rect.midX, y: rect.midY),
+				center: center,
 				area: rect.width * rect.height,
 			)
 		}
