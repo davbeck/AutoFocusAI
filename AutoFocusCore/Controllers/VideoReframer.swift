@@ -775,10 +775,21 @@ public struct VideoReframer {
 			var startIndex = index - 1
 			var startCenter = previousCenter
 			var followingCenter = center
+			let significantMovementProjection = continuationThreshold * initialMovement.length
+			var hasSignificantMovement = (followingCenter - startCenter).dot(initialMovement) > significantMovementProjection
 			while startIndex > previousPanEndIndex,
 			      let earlierCenter = motionFrames[startIndex - 1].value,
 			      (startCenter - earlierCenter).dot(initialMovement) > 0
 			{
+				let precedingMovementProjection = (startCenter - earlierCenter).dot(initialMovement)
+				// Search through the slow tail of a walk, then stop at the
+				// quieter observations before it began. Tiny pose jitter must
+				// not turn a later departure into an anticipatory pan. Measure
+				// along the pan so a head dip cannot start a horizontal walk.
+				if hasSignificantMovement, precedingMovementProjection <= significantMovementProjection {
+					break
+				}
+				hasSignificantMovement = hasSignificantMovement || precedingMovementProjection > significantMovementProjection
 				followingCenter = startCenter
 				startCenter = earlierCenter
 				startIndex -= 1
