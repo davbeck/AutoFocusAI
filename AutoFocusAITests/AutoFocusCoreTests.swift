@@ -254,8 +254,39 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func poseAnalysisDefaultsToOneFrameEveryFiveSeconds() {
-		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 0.2)
+	func poseAnalysisDefaultsToOneFramePerSecond() {
+		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
+	}
+
+	@Test(arguments: [VideoOutputSize.fullHDLandscape, .fullHDVertical])
+	func defaultSamplingKeepsWalkingSubjectInBothNativeCrops(outputSize: VideoOutputSize) async throws {
+		let sourceSize = CGSize(width: 3840, height: 2160)
+		let cropSize = try outputSize.resolve(for: sourceSize)
+		let interval = PoseVideoAnalyzer.sampleInterval(
+			forNominalFrameRate: 30,
+			maximumFramesPerSecond: PoseVideoAnalysisConfiguration().maximumFramesPerSecond,
+		)
+		// An out-and-back walk entirely between the old five-second samples.
+		// Interpolation and adaptive boundary refinement cannot discover movement
+		// if both sampled endpoints describe the same stationary position.
+		let centers = [1200.0, 1800, 2500, 2700, 1800, 1200]
+		let times = PoseVideoAnalyzer.requestedTimes(
+			for: CMTimeRange(start: .zero, duration: CMTime(seconds: 6, preferredTimescale: 600)),
+			sampleInterval: interval,
+		)
+		let frames = times.map { time in
+			FrameData(presentationTime: time, value: Optional(CGPoint(x: centers[Int(time.seconds)], y: 1620)))
+		}
+		let states = try await VideoReframer.trackSubjectCenters(
+			frames,
+			tracker: ShotTracker(sourceSize: sourceSize, outputSize: cropSize),
+			trackingInterval: VideoReframer.trackingInterval(forFramesPerSecond: 8),
+		)
+		for second in [2, 3] {
+			let state = try #require(states.first { abs($0.presentationTime.seconds - Double(second)) < 0.001 })
+			#expect(state.value.bounds.contains(CGPoint(x: centers[second], y: 1620)))
+			#expect(state.value.bounds.size == cropSize)
+		}
 	}
 
 	@Test
@@ -778,8 +809,7 @@ struct AutoFocusCoreTests {
 			precision: CMTime(seconds: 0.125, preferredTimescale: 600),
 		)
 
-		let animation = try #require(plan.animations.first)
-		#expect(plan.animations.count == 1)
+		let animation = try #require(plan.animations.last)
 		#expect(animation.endTime.seconds == 10)
 		#expect(animation.endOrigin.x == 1920)
 
@@ -788,7 +818,11 @@ struct AutoFocusCoreTests {
 		let afterBoundary = plan.origin(at: CMTime(seconds: 5.1, preferredTimescale: 600)).x
 		#expect(beforeBoundary < atBoundary)
 		#expect(atBoundary < afterBoundary)
-		#expect(abs((atBoundary - beforeBoundary) - (afterBoundary - atBoundary)) < 1)
+		// Position remains continuous while pan speed follows the observed
+		// faster first leg and slower continuation.
+		#expect(atBoundary - beforeBoundary > afterBoundary - atBoundary)
+		#expect(atBoundary - beforeBoundary < 20)
+		#expect(afterBoundary - atBoundary < 20)
 	}
 
 	@Test
@@ -821,11 +855,12 @@ struct AutoFocusCoreTests {
 			},
 		)
 
-		let animation = try #require(plan.animations.first)
-		#expect(animation.startTime.seconds >= 4)
-		#expect(animation.startTime.seconds <= 4.125)
-		#expect(animation.endTime.seconds >= 7.75)
-		#expect(animation.endTime.seconds <= 8)
+		let firstAnimation = try #require(plan.animations.first)
+		let lastAnimation = try #require(plan.animations.last)
+		#expect(firstAnimation.startTime.seconds >= 4 - 0.125)
+		#expect(firstAnimation.startTime.seconds <= 4.125)
+		#expect(lastAnimation.endTime.seconds >= 7.75)
+		#expect(lastAnimation.endTime.seconds <= 8)
 	}
 
 	@Test
@@ -887,7 +922,7 @@ struct AutoFocusCoreTests {
 		)
 
 		let animation = try #require(plan.animations.first)
-		#expect(animation.startTime.seconds >= 82)
+		#expect(animation.startTime.seconds >= 82 - 0.125)
 		#expect(animation.startTime.seconds <= 82.125)
 		#expect(animation.endTime.seconds >= 88)
 		#expect(animation.endTime.seconds <= 88.125)

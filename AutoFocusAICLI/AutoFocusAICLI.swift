@@ -54,7 +54,7 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	var outputs: [String] = []
 
 	@Option(help: "Seconds between pose detections.")
-	var poseInterval = 5.0
+	var poseInterval = 1.0
 
 	@Option(help: "First video timestamp to analyze and export, in seconds.")
 	var startTime: Double?

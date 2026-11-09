@@ -788,6 +788,7 @@ public struct VideoReframer {
 		let acquisitionOrigin = await tracker.compositionOrigin(for: acquisitionCenter)
 		var animations: [CropAnimation] = []
 		var plannedOrigin = acquisitionOrigin
+		var previousPanEndIndex = 0
 		var index = 1
 		let continuationThreshold = min(
 			tracker.targetOutput.width,
@@ -810,11 +811,36 @@ public struct VideoReframer {
 				continue
 			}
 
+			// A walk can begin inside the dead zone and only cross its edge
+			// while slowing to a stop. Include that preceding movement in the
+			// pan instead of squeezing a full recenter into the final tiny step.
+			var startIndex = index - 1
+			var startCenter = previousCenter
+			var followingCenter = center
+			let significantMovementProjection = continuationThreshold * initialMovement.length
+			var hasSignificantMovement = (followingCenter - startCenter).dot(initialMovement) > significantMovementProjection
+			while startIndex > previousPanEndIndex,
+			      let earlierCenter = motionFrames[startIndex - 1].value,
+			      (startCenter - earlierCenter).dot(initialMovement) > 0
+			{
+				let precedingMovementProjection = (startCenter - earlierCenter).dot(initialMovement)
+				// Search through the slow tail of a walk, then stop at the
+				// quieter observations before it began. Tiny pose jitter must
+				// not turn a later departure into an anticipatory pan. Measure
+				// along the pan so a head dip cannot start a horizontal walk.
+				if hasSignificantMovement, precedingMovementProjection <= significantMovementProjection {
+					break
+				}
+				hasSignificantMovement = hasSignificantMovement || precedingMovementProjection > significantMovementProjection
+				followingCenter = startCenter
+				startCenter = earlierCenter
+				startIndex -= 1
+			}
 			let startTime = try await cropAnimationStartTime(
-				from: motionFrames[index - 1].presentationTime,
-				center: previousCenter,
-				to: motionFrames[index].presentationTime,
-				center: center,
+				from: motionFrames[startIndex].presentationTime,
+				center: startCenter,
+				to: motionFrames[startIndex + 1].presentationTime,
+				center: followingCenter,
 				framingOrigin: plannedOrigin,
 				tracker: tracker,
 				precision: precision,
@@ -853,13 +879,38 @@ public struct VideoReframer {
 				motionFrames[endIndex].presentationTime
 			}
 
+			// Preserve changes in walking speed within a continuous pan. One
+			// average velocity across a fast departure and slow continuation
+			// can leave the crop behind the speaker even at observed timestamps.
+			let horizontalSubjectMovement = motionFrames[endIndex].value!.x - startCenter.x
+			var segmentTime = startTime
+			var segmentOrigin = plannedOrigin
+			for frame in motionFrames[(startIndex + 1) ..< endIndex]
+				where endOrigin.x != plannedOrigin.x && frame.presentationTime > startTime && frame.presentationTime < endTime
+			{
+				let horizontalProgress = min(1, max(0, (frame.value!.x - startCenter.x) / horizontalSubjectMovement))
+				let verticalProgress = (frame.presentationTime - startTime).seconds / (endTime - startTime).seconds
+				let origin = CGPoint(
+					x: plannedOrigin.x + (endOrigin.x - plannedOrigin.x) * horizontalProgress,
+					y: plannedOrigin.y + (endOrigin.y - plannedOrigin.y) * verticalProgress,
+				)
+				animations.append(CropAnimation(
+					startTime: segmentTime,
+					endTime: frame.presentationTime,
+					startOrigin: segmentOrigin,
+					endOrigin: origin,
+				))
+				segmentTime = frame.presentationTime
+				segmentOrigin = origin
+			}
 			animations.append(CropAnimation(
-				startTime: startTime,
+				startTime: segmentTime,
 				endTime: endTime,
-				startOrigin: plannedOrigin,
+				startOrigin: segmentOrigin,
 				endOrigin: endOrigin,
 			))
 			plannedOrigin = endOrigin
+			previousPanEndIndex = endIndex
 			index = endIndex + 1
 		}
 
@@ -916,7 +967,9 @@ public struct VideoReframer {
 				lowerBound = midpoint
 			}
 		}
-		return upperBound
+		// Include the last stationary observation in the onset bracket. Returning
+		// the first moving timestamp can collapse an unresolved final step to a cut.
+		return lowerBound
 	}
 
 	private static func cropAnimationEndTime(
@@ -1123,17 +1176,18 @@ public struct VideoReframer {
 		}
 	}
 
-	private static func primaryPose(
+	static func primaryPose(
 		in poses: [HumanBodyPoseObservation],
 		sourceSize: CGSize,
 		preferredCenter: CGPoint?,
 		maximumDistance: CGFloat?,
 	) -> HumanBodyPoseObservation? {
-		let candidates = poses.enumerated().map { index, pose in
+		let candidates = poses.enumerated().compactMap { index, pose -> PoseCandidate? in
+			guard let center = ShotTracker.compositionAnchor(for: pose, sourceSize: sourceSize) else { return nil }
 			let rect = boundingRect(for: pose, sourceSize: sourceSize)
 			return PoseCandidate(
 				index: index,
-				center: CGPoint(x: rect.midX, y: rect.midY),
+				center: center,
 				area: rect.width * rect.height,
 			)
 		}

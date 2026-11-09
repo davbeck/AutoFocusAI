@@ -33,12 +33,12 @@ Run the built binary with:
 <input-video> <output-video>
 ```
 
-Pose detection runs once every five seconds by default. Use `--pose-interval` to set the
+Pose detection runs once per second by default, including for moving speakers. Use `--pose-interval` to set the
 number of seconds between detections, and `--start-time` / `--end-time` to limit
 both analysis and video export to a half-open range of video timestamps:
 
 ```sh
-afai input.mov output.mov --pose-interval 5 --start-time 60 --end-time 120
+afai input.mov output.mov --pose-interval 1 --start-time 60 --end-time 120
 ```
 
 Output is a native-resolution crop: pixels are neither scaled up nor down. Use

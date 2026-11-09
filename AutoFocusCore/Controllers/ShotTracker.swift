@@ -158,7 +158,10 @@ public actor ShotTracker {
 
 	func subjectCenter(for pose: HumanBodyPoseObservation?) -> CGPoint? {
 		guard let pose else { return nil }
+		return Self.compositionAnchor(for: pose, sourceSize: sourceSize)
+	}
 
+	static func compositionAnchor(for pose: HumanBodyPoseObservation, sourceSize: CGSize) -> CGPoint? {
 		let facePoints = pose.allJoints(in: .face).values
 			.filter { $0.confidence > 0.1 }
 			.map { $0.location.toImageCoordinates(sourceSize, origin: .lowerLeft) }
