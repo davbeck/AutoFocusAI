@@ -536,10 +536,9 @@ public struct VideoReframer {
 		)
 
 		var configuration = try await AVVideoComposition.Configuration(for: asset)
-		configuration.frameDuration = try await Self.frameDuration(for: track)
 		configuration.instructions = [instruction]
 		configuration.renderSize = analysis.renderSize
-		configuration.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
+		configuration.sourceTrackIDForFrameTiming = track.trackID
 		return AVVideoComposition(configuration: configuration)
 	}
 
@@ -606,20 +605,10 @@ public struct VideoReframer {
 		)
 
 		var configuration = try await AVVideoComposition.Configuration(for: asset)
-		configuration.frameDuration = try await Self.frameDuration(for: leftTrack)
 		configuration.instructions = [instruction]
 		configuration.renderSize = comparisonRenderSize
-		configuration.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
+		configuration.sourceTrackIDForFrameTiming = leftTrack.trackID
 		return AVVideoComposition(configuration: configuration)
-	}
-
-	private static func frameDuration(for track: AVAssetTrack) async throws -> CMTime {
-		let nominalFrameRate = try await track.load(.nominalFrameRate)
-		if nominalFrameRate > 0 {
-			return CMTime(value: 1, timescale: CMTimeScale(nominalFrameRate.rounded()))
-		} else {
-			return CMTime(value: 1, timescale: 30)
-		}
 	}
 
 	static func trackingInterval(forFramesPerSecond framesPerSecond: Double) -> CMTime {
