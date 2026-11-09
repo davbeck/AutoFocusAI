@@ -157,3 +157,16 @@ startup and excluding Vision analysis. This is 44.12 selected source seconds and
 checked independently from subject framing; these static crops do not validate
 tracking quality. No production footage or derived subject observations were
 added to the repository.
+
+Two archived HEVC examples also exposed a demuxer-reference distinction. Their
+MOV edit lists map media time to the asset timeline. After applying the native
+`AVAssetTrackSegment.timeMapping`, all 750 output PTS for the 0–25 s walking
+example and all 600 output PTS for the 5–25 s background-people example matched
+exactly. Their edit media origins are respectively 602/600 and 171/600 seconds.
+FFprobe's normal edit-list interpretation produced different reference phases
+(roughly 2–3 ticks and 9 ticks at 1/600), including one different boundary-frame
+count in the second case. Native source/target mappings explain the differences;
+they were not an export speed change. Consumers that interpret these legacy MOV
+edits differently can disagree at a cut boundary, so original-source import in
+the destination editor should be checked for such files. Newer multiweek capture
+checks above matched both the packet and native export timelines.
