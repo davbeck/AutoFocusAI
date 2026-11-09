@@ -39,12 +39,35 @@ permission change, or sandbox classification was added to the CLI.
 Validation completed:
 
 - CLI Xcode build succeeded.
-- `ErrorDiagnosticsTests`: 3 tests passed, covering nested causes, unknown error
-  identity/reason, missing underlying errors, and exclusion of arbitrary
-  `userInfo` values.
+- `ErrorDiagnosticsTests`: 7 tests passed, covering nested causes, unknown
+  native/Swift error identity, failure reasons, missing underlying errors,
+  bounded output, and exclusion of arbitrary `userInfo` values.
 - SwiftFormat 0.58.1 repository lint: 0 of 28 files require formatting.
 - `git diff --check` passed.
 
 The formatter emits at most eight causal levels and reads only domain, code,
 localized description/failure reason, and the underlying-error link. It does
 not dump arbitrary framework `userInfo` dictionaries.
+
+## Expanded checks across recording weeks
+
+The same CLI binary analyzed source 10–11 seconds from three additional original
+4K camera recordings. Each command used `--pose-data`, `--start-time 10`,
+`--end-time 11`, and `--debug`; no media export was needed for this diagnostic
+check. Output files stayed in a temporary local directory.
+
+| Source recording | Codec | Restricted execution | Unrestricted execution |
+| --- | --- | --- | --- |
+| August 23, `10.42.17.652 Sermon 2026-08-23 Preacher.mov` | HEVC | Exit 1 | Exit 0, one pose sample |
+| October 18, `10.30.47.750 Sermon 2026-10-18 MEVO-KH4KR (Mevo-KH4KR).mov` | H.264 | Exit 1 | Exit 0, one pose sample |
+| November 1, `10.35.33.027 Sermon 2026-11-01 MEVO-KH4KR (Mevo-KH4KR).mov` | HEVC | Exit 1 | Exit 0, one pose sample |
+
+All three restricted runs exposed the same AVFoundation `-11821` → OSStatus
+`-12911` causal chain. All three unrestricted runs emitted no stderr. These
+results extend the environment-dependent reproduction across source weeks and
+both codecs; they do not identify the specific restriction responsible.
+
+Expanded automated coverage uses synthetic errors only. It checks a native
+reader error with nested media/system causes, an unexpected Swift error with a
+stable Foundation identity, the documented causal-depth limit, and suppression
+of a repeated failure reason. No production frame or pose fixture is included.
