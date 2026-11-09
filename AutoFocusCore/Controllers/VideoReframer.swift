@@ -7,55 +7,178 @@ private actor AdaptivePoseFrameProvider {
 	let analyzer: PoseVideoAnalyzer
 
 	init(url: URL, configuration: PoseVideoAnalysisConfiguration) {
-		self.analyzer = PoseVideoAnalyzer(
-			asset: AVURLAsset(url: url),
-			configuration: configuration,
-		)
+		self.analyzer = PoseVideoAnalyzer(asset: AVURLAsset(url: url), configuration: configuration)
 	}
 
-	func frames(at times: [CMTime]) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
-		try await analyzer.process(at: times)
+	func requests(at times: [CMTime]? = nil) async throws -> [PoseVideoAnalyzer.SampleRequest] {
+		try await analyzer.sampleRequests(at: times)
+	}
+
+	func samples(for requests: [PoseVideoAnalyzer.SampleRequest], progressHandler: PoseVideoAnalyzer.ProgressHandler?) async throws -> [PoseAnalysisFile.Sample] {
+		try await analyzer.process(requests: requests, progressHandler: progressHandler)
 	}
 }
 
 /// Shares source observations, including empty results, between crop calculations.
-/// Keys are requested asset timestamps; detected frames retain their actual timestamps.
+/// Extraction context keeps range boundaries and decode strategies distinct.
 actor SharedPoseFrameProvider {
 	typealias Frame = FrameData<[HumanBodyPoseObservation]>
-	typealias Provider = @Sendable ([CMTime]) async throws -> [Frame]
+	typealias Request = PoseVideoAnalyzer.SampleRequest
+	typealias Provider = @Sendable ([Request], PoseVideoAnalyzer.ProgressHandler?) async throws -> [PoseAnalysisFile.Sample]
 
-	private let provider: Provider
-	private var framesByRequest: [CMTime: Task<[Frame], any Error>] = [:]
-	private var reusedRequests = 0
+	private struct Key: Hashable, Sendable {
+		var requestedTime: CMTime
+		var strategy: String
+		var extractionTime: CMTime
+		var toleranceBefore: CMTime
+		var toleranceAfter: CMTime
 
-	init(provider: @escaping Provider) {
-		self.provider = provider
+		init(time: CMTime, context: PoseAnalysisFile.RequestContext, normalizeSequentialWindow: Bool = true) {
+			requestedTime = time
+			strategy = context.strategy
+			extractionTime = context.extractionTime.cmTime
+			toleranceBefore = context.toleranceBefore.cmTime
+			toleranceAfter = normalizeSequentialWindow && context.strategy == PoseFrameSelectionStrategy.sequentialReader.rawValue ? .zero : context.toleranceAfter.cmTime
+		}
 	}
 
-	func frames(at times: [CMTime]) async throws -> [Frame] {
-		var frames: [Frame] = []
-		for time in times {
-			try Task.checkCancellation()
-			let task: Task<[Frame], any Error>
-			if let existing = framesByRequest[time] {
-				reusedRequests += 1
-				task = existing
-			} else {
-				let provider = provider
-				task = Task { try await provider([time]) }
-				framesByRequest[time] = task
+	private struct Pending {
+		var token: UUID
+		var task: Task<[Key: PoseAnalysisFile.Sample], any Error>
+		var resultKey: Key
+	}
+
+	private enum Entry {
+		case completed(PoseAnalysisFile.Sample)
+		case pending(Pending)
+	}
+
+	enum Phase { case initial, refinement }
+
+	private let provider: Provider
+	private var entries: [Key: Entry] = [:]
+	private var newRequests = 0
+	private var refinementRequests = 0
+	private var reusedRequests = 0
+	private var cachedRequests = 0
+
+	init(samples: [PoseAnalysisFile.Sample] = [], provider: @escaping Provider) {
+		self.provider = provider
+		for sample in samples where !sample.frames.isEmpty {
+			entries[Key(time: sample.requestedTime.cmTime, context: sample.context)] = .completed(sample)
+		}
+	}
+
+	func frames(for requests: [Request], phase: Phase = .refinement, progressHandler: PoseVideoAnalyzer.ProgressHandler? = nil) async throws -> [Frame] {
+		try Task.checkCancellation()
+		var missing: [Request] = []
+		var missingCacheKeys: [Key] = []
+		var missingKeys: Set<Key> = []
+		var resolvedKeys: [Key] = []
+		for request in requests {
+			var key = Key(time: request.requestedTime, context: request.context)
+			if case let .completed(sample) = entries[key], !sample.frames.isEmpty,
+			   request.context.strategy == PoseFrameSelectionStrategy.sequentialReader.rawValue,
+			   !Self.canReuse(sample, for: request)
+			{
+				// Keep the known first frame for a later wider range. A shorter
+				// window gets its own miss instead of deleting useful observations.
+				key = Key(time: request.requestedTime, context: request.context, normalizeSequentialWindow: false)
 			}
-			frames += try await withTaskCancellationHandler {
-				try await task.value
-			} onCancel: {
-				task.cancel()
+			if case let .completed(sample) = entries[key], !Self.canReuse(sample, for: request) {
+				entries.removeValue(forKey: key)
+			}
+			resolvedKeys.append(key)
+			if entries[key] != nil || missingKeys.contains(key) {
+				cachedRequests += 1
+				if phase == .refinement { reusedRequests += 1 }
+			} else {
+				missing.append(request)
+				missingCacheKeys.append(key)
+				missingKeys.insert(key)
+				newRequests += 1
+				if phase == .refinement { refinementRequests += 1 }
 			}
 		}
+		if !missing.isEmpty {
+			let provider = provider
+			let batchRequests = missing
+			let task = Task {
+				let samples = try await provider(batchRequests, progressHandler)
+				return Dictionary(uniqueKeysWithValues: samples.map { (Key(time: $0.requestedTime.cmTime, context: $0.context, normalizeSequentialWindow: false), $0) })
+			}
+			let token = UUID()
+			for (request, key) in zip(missing, missingCacheKeys) {
+				let resultKey = Key(time: request.requestedTime, context: request.context, normalizeSequentialWindow: false)
+				entries[key] = .pending(Pending(token: token, task: task, resultKey: resultKey))
+			}
+		}
+
+		var frames: [Frame] = []
+		for key in resolvedKeys {
+			guard let entry = entries[key] else { continue }
+			if let sample = try await resolvedSample(entry, key: key) {
+				frames += sample.frames.map(\.frameData)
+			}
+		}
+		if missing.isEmpty { await progressHandler?(1) }
 		return frames
 	}
 
-	var statistics: (requests: Int, reusedRequests: Int) {
-		(framesByRequest.count, reusedRequests)
+	private static func canReuse(_ sample: PoseAnalysisFile.Sample, for request: Request) -> Bool {
+		if sample.frames.isEmpty, request.context.strategy == PoseFrameSelectionStrategy.sequentialReader.rawValue,
+		   sample.context.toleranceAfter.cmTime != request.context.toleranceAfter.cmTime { return false }
+		return sample.frames.allSatisfy { $0.actualTime.cmTime >= request.timeRange.start && $0.actualTime.cmTime < request.timeRange.end }
+	}
+
+	private func removePendingBatch(_ token: UUID) {
+		for key in Array(entries.keys) {
+			if case let .pending(current) = entries[key], current.token == token { entries.removeValue(forKey: key) }
+		}
+	}
+
+	private func resolvedSample(_ entry: Entry, key: Key) async throws -> PoseAnalysisFile.Sample? {
+		switch entry {
+		case let .completed(sample):
+			return sample
+		case let .pending(pending):
+			do {
+				let samples = try await withTaskCancellationHandler {
+					try await pending.task.value
+				} onCancel: {
+					pending.task.cancel()
+				}
+				try Task.checkCancellation()
+				let sample = samples[pending.resultKey]
+				if case let .pending(current) = entries[key], current.token == pending.token {
+					if let sample { entries[key] = .completed(sample) } else { entries.removeValue(forKey: key) }
+				}
+				return sample
+			} catch {
+				removePendingBatch(pending.token)
+				throw error
+			}
+		}
+	}
+
+	func snapshot() async throws -> [PoseAnalysisFile.Sample] {
+		let pendingEntries = entries.map { ($0.key, $0.value) }
+		var samples: [PoseAnalysisFile.Sample] = []
+		for (key, entry) in pendingEntries {
+			try Task.checkCancellation()
+			if let sample = try await resolvedSample(entry, key: key), !sample.frames.isEmpty { samples.append(sample) }
+		}
+		return samples.sorted {
+			if $0.requestedTime.cmTime != $1.requestedTime.cmTime { return $0.requestedTime.cmTime < $1.requestedTime.cmTime }
+			if $0.context.strategy != $1.context.strategy { return $0.context.strategy < $1.context.strategy }
+			if $0.context.extractionTime.cmTime != $1.context.extractionTime.cmTime { return $0.context.extractionTime.cmTime < $1.context.extractionTime.cmTime }
+			if $0.context.toleranceBefore.cmTime != $1.context.toleranceBefore.cmTime { return $0.context.toleranceBefore.cmTime < $1.context.toleranceBefore.cmTime }
+			return $0.context.toleranceAfter.cmTime < $1.context.toleranceAfter.cmTime
+		}
+	}
+
+	var statistics: (requests: Int, reusedRequests: Int, newRequests: Int, cachedRequests: Int) {
+		(refinementRequests, reusedRequests, newRequests, cachedRequests)
 	}
 }
 
@@ -84,39 +207,48 @@ public struct ReframingSourceAnalysis: Sendable {
 	public var poseFrames: [FrameData<[HumanBodyPoseObservation]>]
 	public var timeRange: CMTimeRange?
 	var sharedPoseFrameProvider: SharedPoseFrameProvider?
+	var poseFrameProvider: PoseFrameProvider?
+	private var analysisMetadata: PoseAnalysisFile?
 
-	var poseFrameProvider: PoseFrameProvider? {
-		sharedPoseFrameProvider.map { provider in
-			{ @Sendable times in try await provider.frames(at: times) }
-		}
-	}
-
-	public func poseSamplingStatistics() async -> (initialSamples: Int, additionalRequests: Int, reusedRequests: Int) {
+	public func poseSamplingStatistics() async -> (initialSamples: Int, additionalRequests: Int, reusedRequests: Int, newRequests: Int, cachedRequests: Int) {
 		let statistics = await sharedPoseFrameProvider?.statistics
-		return (poseFrames.count, statistics?.requests ?? 0, statistics?.reusedRequests ?? 0)
+		return (poseFrames.count, statistics?.requests ?? 0, statistics?.reusedRequests ?? 0, statistics?.newRequests ?? poseFrames.count, statistics?.cachedRequests ?? 0)
 	}
 
-	public init(
-		sourceSize: CGSize,
-		poseFrames: [FrameData<[HumanBodyPoseObservation]>],
-		timeRange: CMTimeRange? = nil,
-	) {
+	/// Snapshot after reframing to include newly requested movement-boundary samples.
+	public func poseAnalysisFile() async throws -> PoseAnalysisFile {
+		guard let metadata = analysisMetadata, let sharedPoseFrameProvider else { throw PoseAnalysisFile.Error.requiresLocalSource }
+		return try await PoseAnalysisFile(
+			source: metadata.source,
+			detection: metadata.detection,
+			selectedTimeRange: metadata.selectedTimeRange.cmTimeRange,
+			samples: sharedPoseFrameProvider.snapshot(),
+		)
+	}
+
+	public init(sourceSize: CGSize, poseFrames: [FrameData<[HumanBodyPoseObservation]>], timeRange: CMTimeRange? = nil) {
 		self.sourceSize = sourceSize
 		self.poseFrames = poseFrames
 		self.timeRange = timeRange
 		self.sharedPoseFrameProvider = nil
+		self.poseFrameProvider = nil
+		self.analysisMetadata = nil
 	}
 
 	init(
 		sourceSize: CGSize,
 		poseFrames: [FrameData<[HumanBodyPoseObservation]>],
-		timeRange: CMTimeRange?,
+		timeRange: CMTimeRange,
 		sharedPoseFrameProvider: SharedPoseFrameProvider,
+		poseFrameProvider: @escaping PoseFrameProvider,
+		analysisMetadata: PoseAnalysisFile,
 	) {
 		self.sourceSize = sourceSize
 		self.poseFrames = poseFrames
 		self.timeRange = timeRange
 		self.sharedPoseFrameProvider = sharedPoseFrameProvider
+		self.poseFrameProvider = poseFrameProvider
+		self.analysisMetadata = analysisMetadata
 	}
 }
 
@@ -357,54 +489,42 @@ public struct VideoReframer {
 
 	public func analyzeSource(
 		asset: AVAsset,
+		cachedAnalysis: PoseAnalysisFile? = nil,
 		progressHandler: ProgressHandler? = nil,
 	) async throws -> ReframingSourceAnalysis {
-		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-			throw VideoReframerError.noVideoTrackFound
-		}
-
+		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw VideoReframerError.noVideoTrackFound }
 		let sourceSize = try await Self.sourceSize(for: track)
 		_ = try configuration.outputSize.resolve(for: sourceSize)
 		let trackTimeRange = try await track.load(.timeRange)
-		let timeRange = try PoseVideoAnalyzer.resolvedTimeRange(
-			availableTimeRange: trackTimeRange,
-			requestedTimeRange: configuration.poseAnalysisConfiguration.timeRange,
-		)
+		let timeRange = try PoseVideoAnalyzer.resolvedTimeRange(availableTimeRange: trackTimeRange, requestedTimeRange: configuration.poseAnalysisConfiguration.timeRange)
+		if let cachedAnalysis { try await cachedAnalysis.validate(asset: asset, configuration: configuration.poseAnalysisConfiguration) }
 		await progressHandler?(.init(stage: .poseDetection, fractionCompleted: 0))
-		let analyzer = PoseVideoAnalyzer(
-			asset: asset,
-			videoTrack: track,
-			configuration: configuration.poseAnalysisConfiguration,
-		)
-		let poseFrames = try await analyzer.process { progress in
-			await progressHandler?(
-				.init(
-					stage: .poseDetection,
-					fractionCompleted: progress * Self.poseDetectionWeight,
-				),
-			)
+		let poseProgress: PoseVideoAnalyzer.ProgressHandler = { progress in
+			await progressHandler?(.init(stage: .poseDetection, fractionCompleted: progress * Self.poseDetectionWeight))
 		}
-		if let urlAsset = asset as? AVURLAsset {
-			let adaptiveAnalyzer = AdaptivePoseFrameProvider(
-				url: urlAsset.url,
-				configuration: configuration.poseAnalysisConfiguration,
-			)
-			let adaptivePoseFrameProvider = SharedPoseFrameProvider { times in
-				try await adaptiveAnalyzer.frames(at: times)
+		if let urlAsset = asset as? AVURLAsset, urlAsset.url.isFileURL {
+			let metadata = try await PoseAnalysisFile(asset: asset, configuration: configuration.poseAnalysisConfiguration, samples: [])
+			let adaptiveAnalyzer = AdaptivePoseFrameProvider(url: urlAsset.url, configuration: configuration.poseAnalysisConfiguration)
+			let cache = SharedPoseFrameProvider(samples: cachedAnalysis?.samples ?? []) { requests, progress in
+				try await adaptiveAnalyzer.samples(for: requests, progressHandler: progress)
 			}
+			let requests = try await adaptiveAnalyzer.requests()
+			let poseFrames = try await cache.frames(for: requests, phase: .initial, progressHandler: poseProgress)
+			guard !poseFrames.isEmpty else { throw PoseVideoAnalyzer.Error.noFramesGenerated }
 			return ReframingSourceAnalysis(
 				sourceSize: sourceSize,
 				poseFrames: poseFrames,
 				timeRange: timeRange,
-				sharedPoseFrameProvider: adaptivePoseFrameProvider,
-			)
-		} else {
-			return ReframingSourceAnalysis(
-				sourceSize: sourceSize,
-				poseFrames: poseFrames,
-				timeRange: timeRange,
+				sharedPoseFrameProvider: cache,
+				poseFrameProvider: { times in
+					let requests = try await adaptiveAnalyzer.requests(at: times)
+					return try await cache.frames(for: requests)
+				},
+				analysisMetadata: metadata,
 			)
 		}
+		let poseFrames = try await PoseVideoAnalyzer(asset: asset, videoTrack: track, configuration: configuration.poseAnalysisConfiguration).process(progressHandler: poseProgress)
+		return ReframingSourceAnalysis(sourceSize: sourceSize, poseFrames: poseFrames, timeRange: timeRange)
 	}
 
 	public func reframe(

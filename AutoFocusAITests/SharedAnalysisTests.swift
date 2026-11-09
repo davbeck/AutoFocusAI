@@ -8,10 +8,11 @@ struct SharedAnalysisTests {
 	private actor PoseRequests {
 		var times: [CMTime] = []
 
-		func frames(at times: [CMTime]) -> [FrameData<[HumanBodyPoseObservation]>] {
-			self.times += times
-			return times.filter { $0.seconds != 282 }.map {
-				FrameData(presentationTime: $0 + CMTime(value: 1, timescale: 100), value: [])
+		func samples(for requests: [PoseVideoAnalyzer.SampleRequest]) throws -> [PoseAnalysisFile.Sample] {
+			self.times += requests.map(\.requestedTime)
+			return try requests.map {
+				let frames: [FrameData<[HumanBodyPoseObservation]>] = $0.requestedTime.seconds == 282 ? [] : [FrameData(presentationTime: $0.requestedTime + CMTime(value: 1, timescale: 100), value: [])]
+				return try PoseAnalysisFile.Sample(requestedTime: $0.requestedTime, frames: frames, context: $0.context)
 			}
 		}
 	}
@@ -19,11 +20,11 @@ struct SharedAnalysisTests {
 	@Test
 	func sharedObservationsReuseRequestsAndPreserveActualSourceTimestamps() async throws {
 		let requests = PoseRequests()
-		let provider = SharedPoseFrameProvider { times in await requests.frames(at: times) }
+		let provider = SharedPoseFrameProvider { samples, _ in try await requests.samples(for: samples) }
 		let times = [280, 281, 282].map { CMTime(seconds: Double($0), preferredTimescale: 600) }
 
-		let first = try await provider.frames(at: times)
-		let second = try await provider.frames(at: times.reversed())
+		let first = try await provider.frames(for: sampleRequests(times))
+		let second = try await provider.frames(for: sampleRequests(times.reversed()))
 
 		#expect(await requests.times == times)
 		#expect(first.map(\.presentationTime.seconds) == [280.01, 281.01])
@@ -36,15 +37,26 @@ struct SharedAnalysisTests {
 	@Test
 	func overlappingCropRequestsShareInFlightDetection() async throws {
 		let requests = PoseRequests()
-		let provider = SharedPoseFrameProvider { times in await requests.frames(at: times) }
+		let provider = SharedPoseFrameProvider { samples, _ in try await requests.samples(for: samples) }
 		let time = CMTime(seconds: 301, preferredTimescale: 600)
 
-		async let landscape = provider.frames(at: [time])
-		async let portrait = provider.frames(at: [time])
+		async let landscape = provider.frames(for: sampleRequests([time]))
+		async let portrait = provider.frames(for: sampleRequests([time]))
 		let (landscapeFrames, portraitFrames) = try await (landscape, portrait)
 
 		#expect(await requests.times == [time])
 		#expect(landscapeFrames.map(\.presentationTime) == portraitFrames.map(\.presentationTime))
+	}
+
+	private func sampleRequests(_ times: [CMTime]) throws -> [PoseVideoAnalyzer.SampleRequest] {
+		try PoseVideoAnalyzer.sampleRequests(
+			at: times,
+			sampleInterval: CMTime(seconds: 1, preferredTimescale: 600),
+			nominalFrameRate: 30,
+			timeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: 400, preferredTimescale: 600)),
+			restrictsToTimeRange: false,
+			strategy: .individualFrames,
+		)
 	}
 
 	@Test
