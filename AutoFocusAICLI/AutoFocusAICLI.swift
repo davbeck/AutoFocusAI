@@ -71,7 +71,7 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	@Option(help: "Native output crop: 9:16-max, 1920x1080, 1080x1920, or a custom WIDTHxHEIGHT.")
 	var resolution: [OutputResolution] = []
 
-	@Flag(help: "Print crop bounds and subject position for each tracked frame before exporting.")
+	@Flag(help: "Print crop bounds and subject positions, and include underlying error domains and codes on failure.")
 	var debug = false
 
 	mutating func validate() throws {
@@ -107,6 +107,18 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	}
 
 	mutating func run() async throws {
+		do {
+			try await runPipeline()
+		} catch {
+			if debug, !(error is CancellationError) {
+				let diagnostics = ErrorDiagnostics.description(for: error) + "\n"
+				FileHandle.standardError.write(Data(diagnostics.utf8))
+			}
+			throw error
+		}
+	}
+
+	private mutating func runPipeline() async throws {
 		let inputURL = URL(fileURLWithPath: (input as NSString).expandingTildeInPath).standardizedFileURL
 
 		guard FileManager.default.fileExists(atPath: inputURL.path) else {
