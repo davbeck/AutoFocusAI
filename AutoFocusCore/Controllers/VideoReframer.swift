@@ -18,6 +18,47 @@ private actor AdaptivePoseFrameProvider {
 	}
 }
 
+/// Shares source observations, including empty results, between crop calculations.
+/// Keys are requested asset timestamps; detected frames retain their actual timestamps.
+actor SharedPoseFrameProvider {
+	typealias Frame = FrameData<[HumanBodyPoseObservation]>
+	typealias Provider = @Sendable ([CMTime]) async throws -> [Frame]
+
+	private let provider: Provider
+	private var framesByRequest: [CMTime: Task<[Frame], any Error>] = [:]
+	private var reusedRequests = 0
+
+	init(provider: @escaping Provider) {
+		self.provider = provider
+	}
+
+	func frames(at times: [CMTime]) async throws -> [Frame] {
+		var frames: [Frame] = []
+		for time in times {
+			try Task.checkCancellation()
+			let task: Task<[Frame], any Error>
+			if let existing = framesByRequest[time] {
+				reusedRequests += 1
+				task = existing
+			} else {
+				let provider = provider
+				task = Task { try await provider([time]) }
+				framesByRequest[time] = task
+			}
+			frames += try await withTaskCancellationHandler {
+				try await task.value
+			} onCancel: {
+				task.cancel()
+			}
+		}
+		return frames
+	}
+
+	var statistics: (requests: Int, reusedRequests: Int) {
+		(framesByRequest.count, reusedRequests)
+	}
+}
+
 public struct ReframingConfiguration: Sendable {
 	public static let defaultTrackingFramesPerSecond = 8.0
 
@@ -42,7 +83,18 @@ public struct ReframingSourceAnalysis: Sendable {
 	public var sourceSize: CGSize
 	public var poseFrames: [FrameData<[HumanBodyPoseObservation]>]
 	public var timeRange: CMTimeRange?
-	var poseFrameProvider: PoseFrameProvider?
+	var sharedPoseFrameProvider: SharedPoseFrameProvider?
+
+	var poseFrameProvider: PoseFrameProvider? {
+		sharedPoseFrameProvider.map { provider in
+			{ @Sendable times in try await provider.frames(at: times) }
+		}
+	}
+
+	public func poseSamplingStatistics() async -> (initialSamples: Int, additionalRequests: Int, reusedRequests: Int) {
+		let statistics = await sharedPoseFrameProvider?.statistics
+		return (poseFrames.count, statistics?.requests ?? 0, statistics?.reusedRequests ?? 0)
+	}
 
 	public init(
 		sourceSize: CGSize,
@@ -52,19 +104,19 @@ public struct ReframingSourceAnalysis: Sendable {
 		self.sourceSize = sourceSize
 		self.poseFrames = poseFrames
 		self.timeRange = timeRange
-		self.poseFrameProvider = nil
+		self.sharedPoseFrameProvider = nil
 	}
 
 	init(
 		sourceSize: CGSize,
 		poseFrames: [FrameData<[HumanBodyPoseObservation]>],
 		timeRange: CMTimeRange?,
-		poseFrameProvider: @escaping PoseFrameProvider,
+		sharedPoseFrameProvider: SharedPoseFrameProvider,
 	) {
 		self.sourceSize = sourceSize
 		self.poseFrames = poseFrames
 		self.timeRange = timeRange
-		self.poseFrameProvider = poseFrameProvider
+		self.sharedPoseFrameProvider = sharedPoseFrameProvider
 	}
 }
 
@@ -333,17 +385,18 @@ public struct VideoReframer {
 			)
 		}
 		if let urlAsset = asset as? AVURLAsset {
-			let adaptivePoseFrameProvider = AdaptivePoseFrameProvider(
+			let adaptiveAnalyzer = AdaptivePoseFrameProvider(
 				url: urlAsset.url,
 				configuration: configuration.poseAnalysisConfiguration,
 			)
+			let adaptivePoseFrameProvider = SharedPoseFrameProvider { times in
+				try await adaptiveAnalyzer.frames(at: times)
+			}
 			return ReframingSourceAnalysis(
 				sourceSize: sourceSize,
 				poseFrames: poseFrames,
 				timeRange: timeRange,
-				poseFrameProvider: { times in
-					try await adaptivePoseFrameProvider.frames(at: times)
-				},
+				sharedPoseFrameProvider: adaptivePoseFrameProvider,
 			)
 		} else {
 			return ReframingSourceAnalysis(

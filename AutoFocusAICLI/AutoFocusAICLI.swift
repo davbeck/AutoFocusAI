@@ -50,8 +50,8 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	@Argument(help: "Path to the source video file.")
 	var input: String
 
-	@Argument(help: "Path where the cropped output video should be written. Omit when exporting JSON data.")
-	var output: String?
+	@Argument(help: "Output video paths, in the same order as --resolution values. Omit when exporting JSON data.")
+	var outputs: [String] = []
 
 	@Option(help: "Seconds between pose detections.")
 	var poseInterval = 5.0
@@ -87,15 +87,18 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 		if let startTime, let endTime, endTime <= startTime {
 			throw ValidationError("--end-time must be later than --start-time.")
 		}
-		let outputModeCount = [output, poseData, keyframes].compactMap(\.self).count
+		let outputModeCount = (outputs.isEmpty ? 0 : 1) + [poseData, keyframes].compactMap(\.self).count
 		if outputModeCount == 0 {
 			throw ValidationError("Provide an output video path, --pose-data <json-path>, or --keyframes <json-path>.")
 		}
 		if outputModeCount > 1 {
-			throw ValidationError("Choose exactly one output video path, --pose-data, or --keyframes.")
+			throw ValidationError("Choose video output, --pose-data, or --keyframes.")
 		}
-		if keyframes == nil, resolution.count > 1 {
-			throw ValidationError("Multiple --resolution values are supported only with --keyframes.")
+		if !outputs.isEmpty, outputs.count != resolvedResolutions.count {
+			throw ValidationError("Provide one --resolution per output video path, in matching order.")
+		}
+		if poseData != nil, resolution.count > 1 {
+			throw ValidationError("--resolution does not apply to raw pose data.")
 		}
 		for resolution in resolvedResolutions {
 			do {
@@ -199,20 +202,26 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 			print(
 				"Wrote keyframes for \(analyses.count) output configuration\(analyses.count == 1 ? "" : "s") to \(keyframesURL.path)",
 			)
+			await Self.printSamplingStatistics(sourceAnalysis)
 			return
 		}
 
-		guard let output else {
-			throw ValidationError("Provide an output video path.")
+		let outputURLs = try outputs.map { try validatedOutputURL(for: $0, inputURL: inputURL) }
+		guard Set(outputURLs).count == outputURLs.count else {
+			throw ValidationError("Output video paths must be different from each other.")
 		}
-		let outputURL = try validatedOutputURL(for: output, inputURL: inputURL)
 		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
 		let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
 		let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
-		do {
-			_ = try resolvedResolutions[0].outputSize.resolve(for: sourceSize)
-		} catch {
-			throw ValidationError(Self.presentationText(for: error))
+		for (resolution, outputURL) in zip(resolvedResolutions, outputURLs) {
+			do {
+				_ = try resolution.outputSize.resolve(for: sourceSize)
+			} catch {
+				throw ValidationError(Self.presentationText(for: error))
+			}
+			guard ["mov", "mp4"].contains(outputURL.pathExtension.lowercased()) else {
+				throw ValidationError("Output video must use a .mov or .mp4 extension: \(outputURL.path)")
+			}
 		}
 		let reframer = VideoReframer(
 			configuration: .init(
@@ -222,46 +231,60 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 		)
 
 		print("Analyzing \(inputURL.lastPathComponent)...")
-		let analysis = try await reframer.analyze(asset: asset)
-
-		if debug {
-			print("sourceSize: \(Int(analysis.sourceSize.width)) x \(Int(analysis.sourceSize.height))")
-			print("renderSize: \(Int(analysis.renderSize.width)) x \(Int(analysis.renderSize.height))")
-			if let first = analysis.shotStates.first {
-				print("cropSize:   \(Int(first.value.bounds.width)) x \(Int(first.value.bounds.height))")
-			}
-			print("")
-			print("time(s)\tcropX\tcropY\tsubjectMidX\tsubjectMidY")
-			for frame in analysis.shotStates {
-				let b = frame.value.bounds
-				if let sc = frame.value.subjectCenter {
-					print(
-						String(
-							format: "%.3f\t%.1f\t%.1f\t%.1f\t%.1f",
-							frame.presentationTime.seconds,
-							b.origin.x,
-							b.origin.y,
-							sc.x,
-							sc.y,
-						),
-					)
-				} else {
-					print(
-						String(
-							format: "%.3f\t%.1f\t%.1f\t-\t-",
-							frame.presentationTime.seconds,
-							b.origin.x,
-							b.origin.y,
-						),
-					)
-				}
-			}
-			print("")
+		let sourceAnalysis = try await reframer.analyzeSource(asset: asset)
+		print("Detected \(sourceAnalysis.poseFrames.count) source pose samples once for \(outputURLs.count) output(s).")
+		for (resolution, outputURL) in zip(resolvedResolutions, outputURLs) {
+			let reframer = VideoReframer(configuration: .init(
+				outputSize: resolution.outputSize,
+				poseAnalysisConfiguration: poseConfiguration,
+			))
+			let analysis = try await reframer.reframe(sourceAnalysis)
+			if debug { Self.printDebug(analysis) }
+			print("Tracked \(analysis.shotStates.count) crop frames. Exporting \(outputURL.lastPathComponent)...")
+			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL)
+			print("Exported to \(outputURL.path)")
 		}
+		await Self.printSamplingStatistics(sourceAnalysis)
+	}
 
-		print("Analyzed \(analysis.shotStates.count) frames. Exporting...")
-		try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL)
-		print("Exported to \(outputURL.path)")
+	private static func printSamplingStatistics(_ sourceAnalysis: ReframingSourceAnalysis) async {
+		let sampling = await sourceAnalysis.poseSamplingStatistics()
+		print("Pose sampling: \(sampling.initialSamples) initial samples, \(sampling.additionalRequests) unique refinement requests, \(sampling.reusedRequests) reused requests.")
+	}
+
+	private static func printDebug(_ analysis: ReframingAnalysis) {
+		print("sourceSize: \(Int(analysis.sourceSize.width)) x \(Int(analysis.sourceSize.height))")
+		print("renderSize: \(Int(analysis.renderSize.width)) x \(Int(analysis.renderSize.height))")
+		if let first = analysis.shotStates.first {
+			print("cropSize:   \(Int(first.value.bounds.width)) x \(Int(first.value.bounds.height))")
+		}
+		print("")
+		print("time(s)\tcropX\tcropY\tsubjectMidX\tsubjectMidY")
+		for frame in analysis.shotStates {
+			let b = frame.value.bounds
+			if let sc = frame.value.subjectCenter {
+				print(
+					String(
+						format: "%.3f\t%.1f\t%.1f\t%.1f\t%.1f",
+						frame.presentationTime.seconds,
+						b.origin.x,
+						b.origin.y,
+						sc.x,
+						sc.y,
+					),
+				)
+			} else {
+				print(
+					String(
+						format: "%.3f\t%.1f\t%.1f\t-\t-",
+						frame.presentationTime.seconds,
+						b.origin.x,
+						b.origin.y,
+					),
+				)
+			}
+		}
+		print("")
 	}
 
 	private func selectedTimeRange(for trackTimeRange: CMTimeRange) throws -> CMTimeRange {
