@@ -77,3 +77,15 @@ using an upper-left origin.
 Sparse sampling uses individual timestamp extraction so the decoder can skip
 most of the video. Dense sampling over a sufficiently long range switches to a
 sequential asset reader to avoid repeated seek overhead.
+
+When analysis or export fails, add `--debug` to include error domains, codes,
+failure reasons, and underlying causes on standard error. The normal concise
+error and nonzero exit status are preserved. For example:
+
+```sh
+afai input.mov output.mov --start-time 280 --end-time 320 --debug 2>failure.log
+```
+
+`Cannot Decode` alone does not establish corrupt media or a sandbox/access
+failure. Compare the underlying diagnostics and the same command in the intended
+execution environment; the CLI does not retry with different permissions.
