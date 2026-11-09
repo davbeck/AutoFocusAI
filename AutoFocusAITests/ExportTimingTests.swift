@@ -25,7 +25,7 @@ struct ExportTimingTests {
 		let originalMarkers = try await frameMarkers(in: source)
 		let outputMarkers = try await frameMarkers(in: output)
 		#expect(outputMarkers.count == originalMarkers.count)
-		#expect(zip(outputMarkers, originalMarkers).allSatisfy { abs(Int($0) - Int($1)) <= 3 })
+		#expect(zip(outputMarkers, originalMarkers).allSatisfy { abs(Int($0) - Int($1)) <= 1 })
 		#expect(after.map(\.time) == before.map(\.time))
 		#expect(after.map(\.duration) == before.map(\.duration))
 		#expect(try await output.load(.duration) == source.load(.duration))
