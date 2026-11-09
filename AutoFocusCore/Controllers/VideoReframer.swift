@@ -840,16 +840,17 @@ public struct VideoReframer {
 			// Preserve changes in walking speed within a continuous pan. One
 			// average velocity across a fast departure and slow continuation
 			// can leave the crop behind the speaker even at observed timestamps.
-			let subjectMovement = motionFrames[endIndex].value! - startCenter
+			let horizontalSubjectMovement = motionFrames[endIndex].value!.x - startCenter.x
 			var segmentTime = startTime
 			var segmentOrigin = plannedOrigin
 			for frame in motionFrames[(startIndex + 1) ..< endIndex]
-				where frame.presentationTime > startTime && frame.presentationTime < endTime
+				where endOrigin.x != plannedOrigin.x && frame.presentationTime > startTime && frame.presentationTime < endTime
 			{
-				let progress = min(1, max(0, (frame.value! - startCenter).dot(subjectMovement) / subjectMovement.dot(subjectMovement)))
+				let horizontalProgress = min(1, max(0, (frame.value!.x - startCenter.x) / horizontalSubjectMovement))
+				let verticalProgress = (frame.presentationTime - startTime).seconds / (endTime - startTime).seconds
 				let origin = CGPoint(
-					x: plannedOrigin.x + (endOrigin.x - plannedOrigin.x) * progress,
-					y: plannedOrigin.y + (endOrigin.y - plannedOrigin.y) * progress,
+					x: plannedOrigin.x + (endOrigin.x - plannedOrigin.x) * horizontalProgress,
+					y: plannedOrigin.y + (endOrigin.y - plannedOrigin.y) * verticalProgress,
 				)
 				animations.append(CropAnimation(
 					startTime: segmentTime,

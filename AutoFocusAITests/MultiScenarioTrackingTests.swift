@@ -39,6 +39,18 @@ struct MultiScenarioTrackingTests {
 	}
 
 	@Test(arguments: [CGSize(width: 1920, height: 1080), CGSize(width: 1080, height: 1920)])
+	func horizontalPanDoesNotReverseWhenSpeakerBobsHead(outputSize: CGSize) async throws {
+		let states = try await track(
+			xs: [1500, 1500, 1600, 2100, 2130, 2160],
+			ys: [1620, 1620, 1620, 1450, 1750, 1420],
+			outputSize: outputSize,
+		)
+		for (previous, next) in zip(states, states.dropFirst()) {
+			#expect(next.value.bounds.minX >= previous.value.bounds.minX)
+		}
+	}
+
+	@Test(arguments: [CGSize(width: 1920, height: 1080), CGSize(width: 1080, height: 1920)])
 	func emptyOpeningAcquiresSubjectAtObservedTime(outputSize: CGSize) async throws {
 		let frames = [nil, nil, CGPoint(x: 3400, y: 1620), CGPoint(x: 2800, y: 1620), CGPoint(x: 2200, y: 1620)]
 			.enumerated().map { index, center in
