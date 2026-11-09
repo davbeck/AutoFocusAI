@@ -925,7 +925,9 @@ public struct VideoReframer {
 				lowerBound = midpoint
 			}
 		}
-		return upperBound
+		// Include the last stationary observation in the onset bracket. Returning
+		// the first moving timestamp can collapse an unresolved final step to a cut.
+		return lowerBound
 	}
 
 	private static func cropAnimationEndTime(

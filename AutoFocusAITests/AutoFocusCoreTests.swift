@@ -857,7 +857,7 @@ struct AutoFocusCoreTests {
 
 		let firstAnimation = try #require(plan.animations.first)
 		let lastAnimation = try #require(plan.animations.last)
-		#expect(firstAnimation.startTime.seconds >= 4)
+		#expect(firstAnimation.startTime.seconds >= 4 - 0.125)
 		#expect(firstAnimation.startTime.seconds <= 4.125)
 		#expect(lastAnimation.endTime.seconds >= 7.75)
 		#expect(lastAnimation.endTime.seconds <= 8)
@@ -922,7 +922,7 @@ struct AutoFocusCoreTests {
 		)
 
 		let animation = try #require(plan.animations.first)
-		#expect(animation.startTime.seconds >= 82)
+		#expect(animation.startTime.seconds >= 82 - 0.125)
 		#expect(animation.startTime.seconds <= 82.125)
 		#expect(animation.endTime.seconds >= 88)
 		#expect(animation.endTime.seconds <= 88.125)
