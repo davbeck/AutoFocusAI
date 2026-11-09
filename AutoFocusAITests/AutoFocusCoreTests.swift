@@ -254,8 +254,39 @@ struct AutoFocusCoreTests {
 	}
 
 	@Test
-	func poseAnalysisDefaultsToOneFrameEveryFiveSeconds() {
-		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 0.2)
+	func poseAnalysisDefaultsToOneFramePerSecond() {
+		#expect(PoseVideoAnalysisConfiguration().maximumFramesPerSecond == 1)
+	}
+
+	@Test(arguments: [VideoOutputSize.fullHDLandscape, .fullHDVertical])
+	func defaultSamplingKeepsWalkingSubjectInBothNativeCrops(outputSize: VideoOutputSize) async throws {
+		let sourceSize = CGSize(width: 3840, height: 2160)
+		let cropSize = try outputSize.resolve(for: sourceSize)
+		let interval = PoseVideoAnalyzer.sampleInterval(
+			forNominalFrameRate: 30,
+			maximumFramesPerSecond: PoseVideoAnalysisConfiguration().maximumFramesPerSecond,
+		)
+		// An out-and-back walk entirely between the old five-second samples.
+		// Interpolation and adaptive boundary refinement cannot discover movement
+		// if both sampled endpoints describe the same stationary position.
+		let centers = [1200.0, 1800, 2500, 2700, 1800, 1200]
+		let times = PoseVideoAnalyzer.requestedTimes(
+			for: CMTimeRange(start: .zero, duration: CMTime(seconds: 6, preferredTimescale: 600)),
+			sampleInterval: interval,
+		)
+		let frames = times.map { time in
+			FrameData(presentationTime: time, value: Optional(CGPoint(x: centers[Int(time.seconds)], y: 1620)))
+		}
+		let states = try await VideoReframer.trackSubjectCenters(
+			frames,
+			tracker: ShotTracker(sourceSize: sourceSize, outputSize: cropSize),
+			trackingInterval: VideoReframer.trackingInterval(forFramesPerSecond: 8),
+		)
+		for second in [2, 3] {
+			let state = try #require(states.first { abs($0.presentationTime.seconds - Double(second)) < 0.001 })
+			#expect(state.value.bounds.contains(CGPoint(x: centers[second], y: 1620)))
+			#expect(state.value.bounds.size == cropSize)
+		}
 	}
 
 	@Test
