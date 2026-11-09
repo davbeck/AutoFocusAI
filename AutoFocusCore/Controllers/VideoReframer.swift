@@ -746,6 +746,7 @@ public struct VideoReframer {
 		let acquisitionOrigin = await tracker.compositionOrigin(for: acquisitionCenter)
 		var animations: [CropAnimation] = []
 		var plannedOrigin = acquisitionOrigin
+		var previousPanEndIndex = 0
 		var index = 1
 		let continuationThreshold = min(
 			tracker.targetOutput.width,
@@ -768,11 +769,25 @@ public struct VideoReframer {
 				continue
 			}
 
+			// A walk can begin inside the dead zone and only cross its edge
+			// while slowing to a stop. Include that preceding movement in the
+			// pan instead of squeezing a full recenter into the final tiny step.
+			var startIndex = index - 1
+			var startCenter = previousCenter
+			var followingCenter = center
+			while startIndex > previousPanEndIndex,
+			      let earlierCenter = motionFrames[startIndex - 1].value,
+			      (startCenter - earlierCenter).dot(initialMovement) > 0
+			{
+				followingCenter = startCenter
+				startCenter = earlierCenter
+				startIndex -= 1
+			}
 			let startTime = try await cropAnimationStartTime(
-				from: motionFrames[index - 1].presentationTime,
-				center: previousCenter,
-				to: motionFrames[index].presentationTime,
-				center: center,
+				from: motionFrames[startIndex].presentationTime,
+				center: startCenter,
+				to: motionFrames[startIndex + 1].presentationTime,
+				center: followingCenter,
 				framingOrigin: plannedOrigin,
 				tracker: tracker,
 				precision: precision,
@@ -818,6 +833,7 @@ public struct VideoReframer {
 				endOrigin: endOrigin,
 			))
 			plannedOrigin = endOrigin
+			previousPanEndIndex = endIndex
 			index = endIndex + 1
 		}
 
