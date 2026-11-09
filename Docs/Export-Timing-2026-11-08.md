@@ -68,10 +68,10 @@ timestamps and coverage, comparison composition timing, paired crop synchronizat
 frame-aligned and arbitrary subranges, a nonzero track origin, dimensions,
 translation-only native crop transforms, and video-only output. Empty reader marker
 buffers are excluded from frame counts; coverage is measured between presentation
-timestamps and the track's edited end.
+timestamps, bounded by both the final sample end and the track's edited end.
 
-The fixtures have a distinct gray level for each frame. Decoded output markers
-are compared with the source markers as well as their presentation timestamps,
+The fixtures encode a distinct eight-bit black/white frame number. Decoded output markers
+are compared exactly with the source markers as well as their presentation timestamps,
 so duplicated, dropped, or reordered frames are observable. They are bundled
 rather than encoded during tests because concurrent `AVAssetWriter` fixture
 generation was observed to stall with incomplete source movies on this
@@ -89,3 +89,71 @@ ffprobe -v error -select_streams v:0 -show_packets \
 No full 51-minute export or new soundboard alignment measurement was needed for
 this timing fix. The capture-specific alignment values from the editing session
 remain separate from AutoFocusAI's export policy.
+
+
+## Expanded cadence and multiweek validation
+
+The exported-media matrix now covers 24, 25, 30, 50, and 60 fps; exact
+24000/1001, 30000/1001, and 60000/1001; regular VFR; and irregular VFR including
+667 ms frame holds. Full exports of both crop shapes compare every source/output
+PTS, actual presentation coverage, and decoded frame number. Five representative
+cadences also exercise both comparison shapes. Four fractional/VFR cases trim
+through partial frames near the source end after insertion at a seven-second
+track origin. The frame-aligned trim and native unit-transform checks remain.
+
+An incoming-audio fixture checks the current policy: audio present in the input
+is retained at elapsed zero after trimming, with matching audio end coverage to
+one audio media tick. Video-only inputs produce no audio track. AutoFocusAI does
+not automatically strip incoming audio; the production camera recordings used
+here already have separate audio files.
+
+Two precision distinctions were demonstrated by the expanded tests:
+
+- A MOV's edit header can have coarser precision than its samples. In the exact
+  23.976 fixture, AVFoundation reports a 3.754 s track/edit range while the last
+  actual sample ends at 3.753750 s. Inspection bounds final coverage by both
+  values, and does not assign an empty header tail to the final frame. Exported
+  video duration matches actual source sample coverage; it can differ from the
+  source's coarse movie duration by less than one source header tick. Tests check
+  that bound separately from cadence and displayed frame coverage.
+- A trim through half of a media tick can round differently in separate export
+  sessions. Arbitrary-boundary paired PTS remain within one source media tick
+  (8.33 µs for the 120000-timescale fixture), with each output independently
+  checked against the source phase and selected duration. Frame-aligned exports
+  preserve exact paired PTS. This is distinct from rounding to a video frame.
+
+The full repository test run passed, including twenty-one timing cases producing
+42 tiny real exports. The timing cases completed in 1.663–4.863 s while running
+in parallel. They remain parallel. A
+sample of the initially expanded run showed cooperative workers blocked inside
+`copyNextSampleBuffer`; the macOS 26 async provider also reached that synchronous
+operation. Each inspector now has its own Dispatch-backed actor executor, leaving
+Swift's shared cooperative pool available for AVFoundation's async work. No tests
+are serialized and no sleeps, retries, or Sendable escape hatches are used. This
+is the [documented custom-executor use case for blocking I/O](https://developer.apple.com/documentation/swift/serialexecutor).
+
+Separate static-crop exports inspected three recording weeks, with no Vision
+analysis, to isolate the export path:
+
+| Source | Intervals | Crop dimensions | Frames per output |
+| --- | --- | --- | --- |
+| August 23 HEVC 4K, quantized 29.97 | Beginning, middle, final 3.01 s | 1920 × 1080 / 1080 × 1920 | 91 each |
+| September 20 H.264 4K, quantized 29.97 | Beginning, middle, final 3.01 s | 1920 × 1080 / 1080 × 1920 | 91 each |
+| October 18 H.264 4K with irregular gaps | Beginning, middle, final 3.01 s | 1920 × 1080 / 1080 × 1920 | 91 each |
+| September 20 H.264 1080p, 30 fps | Beginning, middle, final 3.01 s | 960 × 540 / 540 × 960 | 91 each |
+| October 18, 40.406667 s source PTS gap | 78.68–82.68 s | 1920 × 1080 / 1080 × 1920 | 31 over 4 s |
+| October 18, 1.801667 s source PTS gap | 549.783333–553.783333 s | 1920 × 1080 / 1080 × 1920 | 67 over 4 s |
+
+All 28 exported movies matched the expected source-relative packet PTS exactly,
+retained the requested duration exactly, had identical paired PTS, and contained
+no audio track. Output dimensions matched the table. The two gap intervals retain
+existing source cadence and holds; missing capture coverage is not repaired.
+Frame-rate metadata inferred from a VFR excerpt can differ from its source's
+nominal field, so the validation uses actual PTS rather than metadata equality.
+
+These sequential two-shape jobs took 21.069 s total on this Mac, including encoder
+startup and excluding Vision analysis. This is 44.12 selected source seconds and
+88.24 output seconds, not a full-length performance benchmark. Export timing was
+checked independently from subject framing; these static crops do not validate
+tracking quality. No production footage or derived subject observations were
+added to the repository.
