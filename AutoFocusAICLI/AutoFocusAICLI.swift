@@ -68,6 +68,12 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	@Option(help: "Write crop keyframes as JSON to this path instead of exporting video.")
 	var keyframes: String?
 
+	@Option(help: "Reuse source observations from a saved analysis file, detecting missing samples as needed.")
+	var loadAnalysis: String?
+
+	@Option(help: "Save reusable source observations, including adaptive samples. May accompany video or JSON output.")
+	var saveAnalysis: String?
+
 	@Option(help: "Native output crop: 9:16-max, 1920x1080, 1080x1920, or a custom WIDTHxHEIGHT.")
 	var resolution: [OutputResolution] = []
 
@@ -88,8 +94,8 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 			throw ValidationError("--end-time must be later than --start-time.")
 		}
 		let outputModeCount = (outputs.isEmpty ? 0 : 1) + [poseData, keyframes].compactMap(\.self).count
-		if outputModeCount == 0 {
-			throw ValidationError("Provide an output video path, --pose-data <json-path>, or --keyframes <json-path>.")
+		if outputModeCount == 0, saveAnalysis == nil {
+			throw ValidationError("Provide an output video path, --pose-data <json-path>, --keyframes <json-path>, or --save-analysis <path>.")
 		}
 		if outputModeCount > 1 {
 			throw ValidationError("Choose video output, --pose-data, or --keyframes.")
@@ -122,59 +128,46 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	}
 
 	private mutating func runPipeline() async throws {
-		let inputURL = URL(fileURLWithPath: (input as NSString).expandingTildeInPath).standardizedFileURL
-
+		let inputURL = Self.fileURL(for: input)
 		guard FileManager.default.fileExists(atPath: inputURL.path) else {
 			throw ValidationError("Input video does not exist: \(inputURL.path)")
 		}
-
 		guard try inputURL.resourceValues(forKeys: [.fileResourceTypeKey]).fileResourceType != .directory else {
 			throw ValidationError("Input path is a directory, expected a video file: \(inputURL.path)")
+		}
+
+		let outputURLs = try outputs.map { try validatedOutputURL(for: $0, inputURL: inputURL) }
+		let poseDataURL = try poseData.map { try validatedOutputURL(for: $0, inputURL: inputURL) }
+		let keyframesURL = try keyframes.map { try validatedOutputURL(for: $0, inputURL: inputURL) }
+		let savedAnalysisURL = try saveAnalysis.map { try validatedOutputURL(for: $0, inputURL: inputURL) }
+		let loadedAnalysisURL = loadAnalysis.map(Self.fileURL(for:))
+		let otherOutputURLs = outputURLs + [poseDataURL, keyframesURL].compactMap(\.self)
+		let allOutputURLs = otherOutputURLs + [savedAnalysisURL].compactMap(\.self)
+		guard Set(allOutputURLs).count == allOutputURLs.count else {
+			throw ValidationError("Video, JSON, and saved-analysis output paths must be different from each other.")
+		}
+		if let loadedAnalysisURL, otherOutputURLs.contains(loadedAnalysisURL) {
+			throw ValidationError("--load-analysis must differ from video and JSON output paths. Use --save-analysis to update an analysis file.")
+		}
+		for outputURL in outputURLs {
+			guard ["mov", "mp4"].contains(outputURL.pathExtension.lowercased()) else {
+				throw ValidationError("Output video must use a .mov or .mp4 extension: \(outputURL.path)")
+			}
 		}
 
 		let asset = AVURLAsset(url: inputURL)
 		guard let track = try await asset.loadTracks(withMediaType: .video).first else {
 			throw VideoReframerError.noVideoTrackFound
 		}
-		let (trackTimeRange, nominalFrameRate) = try await track.load(.timeRange, .nominalFrameRate)
+		let (trackTimeRange, nominalFrameRate, naturalSize, preferredTransform) = try await track.load(
+			.timeRange, .nominalFrameRate, .naturalSize, .preferredTransform,
+		)
 		let selectedTimeRange = try selectedTimeRange(for: trackTimeRange)
 		let configuredTimeRange = startTime != nil || endTime != nil ? selectedTimeRange : nil
-		let maximumFramesPerSecond = 1 / poseInterval
-		let poseConfiguration = PoseVideoAnalysisConfiguration(
-			maximumFramesPerSecond: maximumFramesPerSecond,
-			timeRange: configuredTimeRange,
-		)
-
-		if let poseData {
-			let poseDataURL = try validatedOutputURL(for: poseData, inputURL: inputURL)
-			print("Detecting poses in \(inputURL.lastPathComponent)...")
-			let frames = try await PoseVideoAnalyzer(
-				asset: asset,
-				videoTrack: track,
-				configuration: poseConfiguration,
-			).process()
-			let effectiveSampleInterval = PoseVideoAnalyzer.sampleInterval(
-				forNominalFrameRate: nominalFrameRate,
-				maximumFramesPerSecond: maximumFramesPerSecond,
-			).seconds
-			let poseDataFile = PoseDataFile(
-				frames: frames,
-				timeRange: selectedTimeRange,
-				timelineOrigin: trackTimeRange.start,
-				sampleInterval: effectiveSampleInterval,
-			)
-			let encoder = JSONEncoder()
-			encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-			try encoder.encode(poseDataFile).write(to: poseDataURL, options: .atomic)
-			print("Wrote \(frames.count) pose samples to \(poseDataURL.path)")
-			return
-		}
-
-		if let keyframes {
-			let keyframesURL = try validatedOutputURL(for: keyframes, inputURL: inputURL)
-			let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
-			let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
-			let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
+		let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+		let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
+		let producesCrops = !outputURLs.isEmpty || keyframesURL != nil
+		if producesCrops {
 			for resolution in resolvedResolutions {
 				do {
 					_ = try resolution.outputSize.resolve(for: sourceSize)
@@ -182,86 +175,106 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 					throw ValidationError(Self.presentationText(for: error))
 				}
 			}
+		}
+		let maximumFramesPerSecond = 1 / poseInterval
+		let poseConfiguration = PoseVideoAnalysisConfiguration(
+			maximumFramesPerSecond: maximumFramesPerSecond,
+			timeRange: configuredTimeRange,
+		)
+		let reframer = VideoReframer(configuration: .init(
+			outputSize: producesCrops ? resolvedResolutions[0].outputSize : .maximum9By16,
+			poseAnalysisConfiguration: poseConfiguration,
+		))
+		print("Analyzing \(inputURL.lastPathComponent)...")
+		let sourceAnalysis = try await Self.prepareSourceAnalysis(reframer: reframer, asset: asset, loading: loadedAnalysisURL)
+		// Persist the initial pass before rendering, then include each crop's new
+		// adaptive observations before its potentially expensive media export.
+		try await Self.persistAnalysis(sourceAnalysis, to: savedAnalysisURL)
 
-			print("Analyzing \(inputURL.lastPathComponent)...")
-			let sourceAnalysis = try await VideoReframer(
-				configuration: .init(
-					outputSize: resolvedResolutions[0].outputSize,
-					poseAnalysisConfiguration: poseConfiguration,
-				),
-			).analyzeSource(asset: asset)
+		if let poseDataURL {
+			let effectiveSampleInterval = PoseVideoAnalyzer.sampleInterval(
+				forNominalFrameRate: nominalFrameRate,
+				maximumFramesPerSecond: maximumFramesPerSecond,
+			).seconds
+			let poseDataFile = PoseDataFile(
+				frames: sourceAnalysis.poseFrames,
+				timeRange: selectedTimeRange,
+				timelineOrigin: trackTimeRange.start,
+				sampleInterval: effectiveSampleInterval,
+			)
+			try Self.writeJSON(poseDataFile, to: poseDataURL)
+			print("Wrote \(sourceAnalysis.poseFrames.count) pose samples to \(poseDataURL.path)")
+		} else if let keyframesURL {
 			var analyses: [ReframingAnalysis] = []
-			analyses.reserveCapacity(resolvedResolutions.count)
 			for resolution in resolvedResolutions {
-				let reframer = VideoReframer(
-					configuration: .init(
-						outputSize: resolution.outputSize,
-						poseAnalysisConfiguration: poseConfiguration,
-					),
-				)
-				let analysis = try await reframer.reframe(sourceAnalysis)
-				analyses.append(analysis)
+				let cropReframer = VideoReframer(configuration: .init(
+					outputSize: resolution.outputSize,
+					poseAnalysisConfiguration: poseConfiguration,
+				))
+				try await analyses.append(cropReframer.reframe(sourceAnalysis))
+				try await Self.persistAnalysis(sourceAnalysis, to: savedAnalysisURL)
 			}
-
-			let keyframesFile = CropKeyframesFile(
+			try Self.writeJSON(CropKeyframesFile(
 				analyses: analyses,
 				timeRange: selectedTimeRange,
 				timelineOrigin: trackTimeRange.start,
-			)
-			let encoder = JSONEncoder()
-			encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-			try encoder.encode(keyframesFile).write(to: keyframesURL, options: .atomic)
-			print(
-				"Wrote keyframes for \(analyses.count) output configuration\(analyses.count == 1 ? "" : "s") to \(keyframesURL.path)",
-			)
-			await Self.printSamplingStatistics(sourceAnalysis)
-			return
-		}
-
-		let outputURLs = try outputs.map { try validatedOutputURL(for: $0, inputURL: inputURL) }
-		guard Set(outputURLs).count == outputURLs.count else {
-			throw ValidationError("Output video paths must be different from each other.")
-		}
-		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
-		let sourceRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
-		let sourceSize = CGSize(width: abs(sourceRect.width), height: abs(sourceRect.height))
-		for (resolution, outputURL) in zip(resolvedResolutions, outputURLs) {
-			do {
-				_ = try resolution.outputSize.resolve(for: sourceSize)
-			} catch {
-				throw ValidationError(Self.presentationText(for: error))
+			), to: keyframesURL)
+			print("Wrote keyframes for \(analyses.count) output configuration(s) to \(keyframesURL.path)")
+		} else {
+			print("Prepared \(sourceAnalysis.poseFrames.count) source pose samples for \(outputURLs.count) video output(s).")
+			for (resolution, outputURL) in zip(resolvedResolutions, outputURLs) {
+				let cropReframer = VideoReframer(configuration: .init(
+					outputSize: resolution.outputSize,
+					poseAnalysisConfiguration: poseConfiguration,
+				))
+				let analysis = try await cropReframer.reframe(sourceAnalysis)
+				try await Self.persistAnalysis(sourceAnalysis, to: savedAnalysisURL)
+				if debug { Self.printDebug(analysis) }
+				print("Tracked \(analysis.shotStates.count) crop frames. Exporting \(outputURL.lastPathComponent)...")
+				try await cropReframer.export(asset: asset, analysis: analysis, outputURL: outputURL)
+				print("Exported to \(outputURL.path)")
 			}
-			guard ["mov", "mp4"].contains(outputURL.pathExtension.lowercased()) else {
-				throw ValidationError("Output video must use a .mov or .mp4 extension: \(outputURL.path)")
-			}
-		}
-		let reframer = VideoReframer(
-			configuration: .init(
-				outputSize: resolvedResolutions[0].outputSize,
-				poseAnalysisConfiguration: poseConfiguration,
-			),
-		)
-
-		print("Analyzing \(inputURL.lastPathComponent)...")
-		let sourceAnalysis = try await reframer.analyzeSource(asset: asset)
-		print("Detected \(sourceAnalysis.poseFrames.count) source pose samples once for \(outputURLs.count) output(s).")
-		for (resolution, outputURL) in zip(resolvedResolutions, outputURLs) {
-			let reframer = VideoReframer(configuration: .init(
-				outputSize: resolution.outputSize,
-				poseAnalysisConfiguration: poseConfiguration,
-			))
-			let analysis = try await reframer.reframe(sourceAnalysis)
-			if debug { Self.printDebug(analysis) }
-			print("Tracked \(analysis.shotStates.count) crop frames. Exporting \(outputURL.lastPathComponent)...")
-			try await reframer.export(asset: asset, analysis: analysis, outputURL: outputURL)
-			print("Exported to \(outputURL.path)")
 		}
 		await Self.printSamplingStatistics(sourceAnalysis)
 	}
 
+	private static func fileURL(for path: String) -> URL {
+		let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+		// The final component may not exist yet. Resolve its existing parent first
+		// so video and analysis destinations cannot alias through a directory link.
+		return url.deletingLastPathComponent().resolvingSymlinksInPath()
+			.appendingPathComponent(url.lastPathComponent).resolvingSymlinksInPath()
+	}
+
+	private static func prepareSourceAnalysis(
+		reframer: VideoReframer,
+		asset: AVAsset,
+		loading url: URL?,
+	) async throws -> ReframingSourceAnalysis {
+		do {
+			let cachedAnalysis = try url.map { try PoseAnalysisFile.load(from: $0) }
+			return try await reframer.analyzeSource(asset: asset, cachedAnalysis: cachedAnalysis)
+		} catch let error as PoseAnalysisFile.Error {
+			throw ValidationError(presentationText(for: error))
+		}
+	}
+
+	private static func writeJSON(_ value: some Encodable, to url: URL) throws {
+		let encoder = JSONEncoder()
+		encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+		try encoder.encode(value).write(to: url, options: .atomic)
+	}
+
+	private static func persistAnalysis(_ sourceAnalysis: ReframingSourceAnalysis, to url: URL?) async throws {
+		guard let url else { return }
+		let file = try await sourceAnalysis.poseAnalysisFile()
+		try file.write(to: url)
+		print("Saved reusable analysis to \(url.path)")
+	}
+
 	private static func printSamplingStatistics(_ sourceAnalysis: ReframingSourceAnalysis) async {
 		let sampling = await sourceAnalysis.poseSamplingStatistics()
-		print("Pose sampling: \(sampling.initialSamples) initial samples, \(sampling.additionalRequests) unique refinement requests, \(sampling.reusedRequests) reused requests.")
+		print("Pose sampling: \(sampling.initialSamples) initial samples, \(sampling.additionalRequests) refinement requests; \(sampling.newRequests) new sample requests, \(sampling.cachedRequests) reused cached requests.")
 	}
 
 	private static func printDebug(_ analysis: ReframingAnalysis) {
@@ -324,7 +337,7 @@ struct AutoFocusAICLI: AsyncParsableCommand {
 	}
 
 	private func validatedOutputURL(for path: String, inputURL: URL) throws -> URL {
-		let outputURL = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+		let outputURL = Self.fileURL(for: path)
 		let outputDirectory = outputURL.deletingLastPathComponent().standardizedFileURL
 		var isDirectory: ObjCBool = false
 		guard FileManager.default.fileExists(atPath: outputDirectory.path, isDirectory: &isDirectory),

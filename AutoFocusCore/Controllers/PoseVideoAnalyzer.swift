@@ -72,111 +72,112 @@ public struct PoseVideoAnalyzer {
 		self.configuration = configuration
 	}
 
+	struct SampleRequest: Sendable {
+		var requestedTime: CMTime
+		var context: PoseAnalysisFile.RequestContext
+		var timeRange: CMTimeRange
+	}
+
 	public func process(progressHandler: ProgressHandler? = nil) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
-		let track: AVAssetTrack
-		if let videoTrack {
-			track = videoTrack
-		} else {
-			guard let loadedTrack = try await asset.loadTracks(withMediaType: .video).first else {
-				throw Error.noVideoTrackFound
-			}
-			track = loadedTrack
-		}
-		let (nominalFrameRate, naturalSize, preferredTransform, trackTimeRange) = try await track.load(
-			.nominalFrameRate,
-			.naturalSize,
-			.preferredTransform,
-			.timeRange,
-		)
-		let timeRange = try Self.resolvedTimeRange(
-			availableTimeRange: trackTimeRange,
-			requestedTimeRange: configuration.timeRange,
-		)
-		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
-
-		let sampleInterval = Self.sampleInterval(
-			forNominalFrameRate: nominalFrameRate,
-			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
-		)
-		let detectionSize = Self.detectionSize(
-			for: sourceSize,
-			maximumLongEdge: configuration.maximumDetectionLongEdge,
-		)
-		let requestedTimes = Self.requestedTimes(for: timeRange, sampleInterval: sampleInterval)
-		let frameSelectionStrategy = Self.resolvedFrameSelectionStrategy(
-			configuration.frameSelectionStrategy,
-			requestedFrameCount: requestedTimes.count,
-			sampleInterval: sampleInterval,
-			nominalFrameRate: nominalFrameRate,
-		)
-
-		let frames = switch frameSelectionStrategy {
-		case .automatic, .individualFrames:
-			try await processIndividualFrames(
-				at: requestedTimes,
-				sampleInterval: sampleInterval,
-				nominalFrameRate: nominalFrameRate,
-				timeRange: timeRange,
-				detectionSize: detectionSize,
-				restrictsToTimeRange: configuration.timeRange != nil,
-				progressHandler: progressHandler,
-			)
-		case .sequentialReader:
-			try await processSequentialFrames(
-				from: track,
-				at: requestedTimes,
-				timeRange: timeRange,
-				preferredTransform: preferredTransform,
-				detectionSize: detectionSize,
-				progressHandler: progressHandler,
-			)
-		}
-
+		let requests = try await sampleRequests()
+		let samples = try await process(requests: requests, progressHandler: progressHandler)
+		let frames = samples.flatMap { $0.frames.map(\.frameData) }
 		guard !frames.isEmpty else { throw Error.noFramesGenerated }
 		return frames
 	}
 
 	func process(at requestedTimes: [CMTime]) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
-		guard !requestedTimes.isEmpty else { return [] }
+		let requests = try await sampleRequests(at: requestedTimes)
+		return try await process(requests: requests).flatMap { $0.frames.map(\.frameData) }
+	}
 
-		let track: AVAssetTrack
-		if let videoTrack {
-			track = videoTrack
-		} else {
-			guard let loadedTrack = try await asset.loadTracks(withMediaType: .video).first else {
-				throw Error.noVideoTrackFound
-			}
-			track = loadedTrack
-		}
-		let (nominalFrameRate, naturalSize, preferredTransform, trackTimeRange) = try await track.load(
-			.nominalFrameRate,
-			.naturalSize,
-			.preferredTransform,
-			.timeRange,
-		)
+	/// Plans extraction before consulting the observation cache, so range-boundary
+	/// shifts and sparse/sequential selection cannot collide at the same timestamp.
+	func sampleRequests(at explicitTimes: [CMTime]? = nil) async throws -> [SampleRequest] {
+		let track = try await resolvedVideoTrack()
+		let (nominalFrameRate, trackTimeRange) = try await track.load(.nominalFrameRate, .timeRange)
 		let timeRange = try Self.resolvedTimeRange(
 			availableTimeRange: trackTimeRange,
 			requestedTimeRange: configuration.timeRange,
 		)
-		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
-		let detectionSize = Self.detectionSize(
-			for: sourceSize,
-			maximumLongEdge: configuration.maximumDetectionLongEdge,
-		)
-		let sampleInterval = Self.sampleInterval(
-			forNominalFrameRate: nominalFrameRate,
-			maximumFramesPerSecond: configuration.maximumFramesPerSecond,
-		)
-
-		return try await processIndividualFrames(
-			at: requestedTimes.filter { $0 >= timeRange.start && $0 < timeRange.end },
+		let sampleInterval = Self.sampleInterval(forNominalFrameRate: nominalFrameRate, maximumFramesPerSecond: configuration.maximumFramesPerSecond)
+		let times = explicitTimes?.filter { $0 >= timeRange.start && $0 < timeRange.end }
+			?? Self.requestedTimes(for: timeRange, sampleInterval: sampleInterval)
+		let strategy = explicitTimes == nil ? Self.resolvedFrameSelectionStrategy(
+			configuration.frameSelectionStrategy,
+			requestedFrameCount: times.count,
+			sampleInterval: sampleInterval,
+			nominalFrameRate: nominalFrameRate,
+		) : .individualFrames
+		return try Self.sampleRequests(
+			at: times,
 			sampleInterval: sampleInterval,
 			nominalFrameRate: nominalFrameRate,
 			timeRange: timeRange,
-			detectionSize: detectionSize,
-			restrictsToTimeRange: true,
-			progressHandler: nil,
+			restrictsToTimeRange: explicitTimes != nil || configuration.timeRange != nil,
+			strategy: strategy,
 		)
+	}
+
+	static func sampleRequests(
+		at times: [CMTime],
+		sampleInterval: CMTime,
+		nominalFrameRate: Float,
+		timeRange: CMTimeRange,
+		restrictsToTimeRange: Bool,
+		strategy: PoseFrameSelectionStrategy,
+	) throws -> [SampleRequest] {
+		let sourceFrameInterval = Self.sampleInterval(forNominalFrameRate: nominalFrameRate, maximumFramesPerSecond: .greatestFiniteMagnitude)
+		let tolerance = min(Self.frameTimeTolerance(for: sampleInterval), sourceFrameInterval)
+		return try times.map { time in
+			let extractionTime = strategy == .individualFrames && restrictsToTimeRange && time == timeRange.start
+				? time + sourceFrameInterval : time
+			let before = strategy == .sequentialReader ? .zero : restrictsToTimeRange ? min(tolerance, max(extractionTime - timeRange.start, .zero)) : tolerance
+			// A sequential reader selects the first frame at or after the request,
+			// bounded by the selection's end; preserve that window for empty results.
+			let after = strategy == .sequentialReader ? timeRange.end - time : restrictsToTimeRange ? min(tolerance, max(timeRange.end - extractionTime, .zero)) : tolerance
+			return try SampleRequest(
+				requestedTime: time,
+				context: PoseAnalysisFile.RequestContext(strategy: strategy.rawValue, extractionTime: extractionTime, toleranceBefore: before, toleranceAfter: after),
+				timeRange: timeRange,
+			)
+		}
+	}
+
+	/// Processes the missing requests as one batch, retaining sequential decoding
+	/// and the request-to-actual-frame mapping, including requests yielding no frame.
+	func process(requests: [SampleRequest], progressHandler: ProgressHandler? = nil) async throws -> [PoseAnalysisFile.Sample] {
+		guard let first = requests.first else { return [] }
+		let track = try await resolvedVideoTrack()
+		let (naturalSize, preferredTransform) = try await track.load(.naturalSize, .preferredTransform)
+		let sourceSize = Self.sourceSize(forNaturalSize: naturalSize, preferredTransform: preferredTransform)
+		let detectionSize = Self.detectionSize(for: sourceSize, maximumLongEdge: configuration.maximumDetectionLongEdge)
+		let frames: [FrameData<[HumanBodyPoseObservation]>?]
+		let failedRequests: Set<Int>
+		if first.context.strategy == PoseFrameSelectionStrategy.sequentialReader.rawValue {
+			frames = try await processSequentialFrames(
+				from: track,
+				at: requests.map(\.requestedTime),
+				timeRange: first.timeRange,
+				preferredTransform: preferredTransform,
+				detectionSize: detectionSize,
+				progressHandler: progressHandler,
+			)
+			failedRequests = []
+		} else {
+			(frames, failedRequests) = try await processIndividualFrames(requests: requests, detectionSize: detectionSize, progressHandler: progressHandler)
+		}
+		return try zip(requests, frames).enumerated().compactMap { index, pair in
+			guard !failedRequests.contains(index) else { return nil }
+			let (request, frame) = pair
+			return try PoseAnalysisFile.Sample(requestedTime: request.requestedTime, frames: frame.map { [$0] } ?? [], context: request.context)
+		}
+	}
+
+	private func resolvedVideoTrack() async throws -> AVAssetTrack {
+		if let videoTrack { return videoTrack }
+		guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw Error.noVideoTrackFound }
+		return track
 	}
 
 	public static func resolvedTimeRange(
@@ -214,29 +215,17 @@ public struct PoseVideoAnalyzer {
 	}
 
 	private func processIndividualFrames(
-		at requestedTimes: [CMTime],
-		sampleInterval: CMTime,
-		nominalFrameRate: Float,
-		timeRange: CMTimeRange,
+		requests: [SampleRequest],
 		detectionSize: CGSize,
-		restrictsToTimeRange: Bool,
 		progressHandler: ProgressHandler?,
-	) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
+	) async throws -> (frames: [FrameData<[HumanBodyPoseObservation]>?], failedRequests: Set<Int>) {
 		let generator = AVAssetImageGenerator(asset: asset)
 		generator.appliesPreferredTrackTransform = true
 		generator.maximumSize = detectionSize
-		let sourceFrameInterval = Self.sampleInterval(
-			forNominalFrameRate: nominalFrameRate,
-			maximumFramesPerSecond: .greatestFiniteMagnitude,
-		)
-		let frameTimeTolerance = min(
-			Self.frameTimeTolerance(for: sampleInterval),
-			sourceFrameInterval,
-		)
-
 		let maximumConcurrentDetectionRequests = max(configuration.maximumConcurrentDetectionRequests, 1)
-		var frames = [FrameData<[HumanBodyPoseObservation]>?](repeating: nil, count: requestedTimes.count)
+		var frames = [FrameData<[HumanBodyPoseObservation]>?](repeating: nil, count: requests.count)
 		var lastGenerationError: Swift.Error?
+		var failedRequests: Set<Int> = []
 
 		if let progressHandler {
 			await progressHandler(0)
@@ -251,49 +240,33 @@ public struct PoseVideoAnalyzer {
 				frames[result.index] = result.frame
 				completedFrameCount += 1
 				if let progressHandler {
-					await progressHandler(Double(completedFrameCount) / Double(requestedTimes.count))
+					await progressHandler(Double(completedFrameCount) / Double(requests.count))
 				}
 			}
 
 			func skipFrame() async {
 				completedFrameCount += 1
 				if let progressHandler {
-					await progressHandler(Double(completedFrameCount) / Double(requestedTimes.count))
+					await progressHandler(Double(completedFrameCount) / Double(requests.count))
 				}
 			}
 
-			for (index, requestedTime) in requestedTimes.enumerated() {
-				// A selected range can begin between source frames. Start with the
-				// first frame after that boundary so Vision never sees an earlier frame.
-				let requestedFrameTime = if restrictsToTimeRange, requestedTime == timeRange.start {
-					requestedTime + sourceFrameInterval
-				} else {
-					requestedTime
-				}
-				if restrictsToTimeRange {
-					generator.requestedTimeToleranceBefore = min(
-						frameTimeTolerance,
-						max(requestedFrameTime - timeRange.start, .zero),
-					)
-					generator.requestedTimeToleranceAfter = min(
-						frameTimeTolerance,
-						max(timeRange.end - requestedFrameTime, .zero),
-					)
-				} else {
-					generator.requestedTimeToleranceBefore = frameTimeTolerance
-					generator.requestedTimeToleranceAfter = frameTimeTolerance
-				}
+			for (index, request) in requests.enumerated() {
+				try Task.checkCancellation()
+				generator.requestedTimeToleranceBefore = request.context.toleranceBefore.cmTime
+				generator.requestedTimeToleranceAfter = request.context.toleranceAfter.cmTime
 
 				let image: CGImage
 				let actualTime: CMTime
 				do {
-					(image, actualTime) = try await Self.generatedImage(using: generator, at: requestedFrameTime)
+					(image, actualTime) = try await Self.generatedImage(using: generator, at: request.context.extractionTime.cmTime)
 				} catch let Error.unableToGenerateImage(error) {
 					lastGenerationError = error
+					failedRequests.insert(index)
 					await skipFrame()
 					continue
 				}
-				guard actualTime >= timeRange.start, actualTime < timeRange.end else {
+				guard actualTime >= request.timeRange.start, actualTime < request.timeRange.end else {
 					await skipFrame()
 					continue
 				}
@@ -321,7 +294,7 @@ public struct PoseVideoAnalyzer {
 		if generatedFrames.isEmpty, let lastGenerationError {
 			throw Error.unableToGenerateImage(lastGenerationError)
 		}
-		return generatedFrames
+		return (frames, failedRequests)
 	}
 
 	private func processSequentialFrames(
@@ -331,7 +304,7 @@ public struct PoseVideoAnalyzer {
 		preferredTransform: CGAffineTransform,
 		detectionSize: CGSize,
 		progressHandler: ProgressHandler?,
-	) async throws -> [FrameData<[HumanBodyPoseObservation]>] {
+	) async throws -> [FrameData<[HumanBodyPoseObservation]>?] {
 		let reader = try AVAssetReader(asset: asset)
 		reader.timeRange = timeRange
 
@@ -421,7 +394,7 @@ public struct PoseVideoAnalyzer {
 		if let progressHandler {
 			await progressHandler(1)
 		}
-		return frames.compactMap(\.self)
+		return frames
 	}
 
 	private static func image(

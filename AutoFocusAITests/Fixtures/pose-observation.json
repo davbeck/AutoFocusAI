@@ -1,0 +1,230 @@
+{
+  "allJoints": [
+    "leftAnkle",
+    {
+      "confidence": 1,
+      "jointName": "leftAnkle",
+      "location": {
+        "cgPoint": [
+          0.45,
+          0.08
+        ]
+      }
+    },
+    "leftEar",
+    {
+      "confidence": 1,
+      "jointName": "leftEar",
+      "location": {
+        "cgPoint": [
+          0.46,
+          0.87
+        ]
+      }
+    },
+    "leftElbow",
+    {
+      "confidence": 1,
+      "jointName": "leftElbow",
+      "location": {
+        "cgPoint": [
+          0.33,
+          0.63
+        ]
+      }
+    },
+    "leftEye",
+    {
+      "confidence": 1,
+      "jointName": "leftEye",
+      "location": {
+        "cgPoint": [
+          0.48,
+          0.89
+        ]
+      }
+    },
+    "leftHip",
+    {
+      "confidence": 1,
+      "jointName": "leftHip",
+      "location": {
+        "cgPoint": [
+          0.45,
+          0.48
+        ]
+      }
+    },
+    "leftKnee",
+    {
+      "confidence": 1,
+      "jointName": "leftKnee",
+      "location": {
+        "cgPoint": [
+          0.45,
+          0.28
+        ]
+      }
+    },
+    "leftShoulder",
+    {
+      "confidence": 1,
+      "jointName": "leftShoulder",
+      "location": {
+        "cgPoint": [
+          0.4,
+          0.77
+        ]
+      }
+    },
+    "leftWrist",
+    {
+      "confidence": 1,
+      "jointName": "leftWrist",
+      "location": {
+        "cgPoint": [
+          0.3,
+          0.5
+        ]
+      }
+    },
+    "neck",
+    {
+      "confidence": 1,
+      "jointName": "neck",
+      "location": {
+        "cgPoint": [
+          0.5,
+          0.8
+        ]
+      }
+    },
+    "nose",
+    {
+      "confidence": 1,
+      "jointName": "nose",
+      "location": {
+        "cgPoint": [
+          0.5,
+          0.87
+        ]
+      }
+    },
+    "rightAnkle",
+    {
+      "confidence": 1,
+      "jointName": "rightAnkle",
+      "location": {
+        "cgPoint": [
+          0.55,
+          0.08
+        ]
+      }
+    },
+    "rightEar",
+    {
+      "confidence": 1,
+      "jointName": "rightEar",
+      "location": {
+        "cgPoint": [
+          0.54,
+          0.87
+        ]
+      }
+    },
+    "rightElbow",
+    {
+      "confidence": 1,
+      "jointName": "rightElbow",
+      "location": {
+        "cgPoint": [
+          0.67,
+          0.63
+        ]
+      }
+    },
+    "rightEye",
+    {
+      "confidence": 1,
+      "jointName": "rightEye",
+      "location": {
+        "cgPoint": [
+          0.52,
+          0.89
+        ]
+      }
+    },
+    "rightHip",
+    {
+      "confidence": 1,
+      "jointName": "rightHip",
+      "location": {
+        "cgPoint": [
+          0.55,
+          0.48
+        ]
+      }
+    },
+    "rightKnee",
+    {
+      "confidence": 1,
+      "jointName": "rightKnee",
+      "location": {
+        "cgPoint": [
+          0.55,
+          0.28
+        ]
+      }
+    },
+    "rightShoulder",
+    {
+      "confidence": 1,
+      "jointName": "rightShoulder",
+      "location": {
+        "cgPoint": [
+          0.6,
+          0.77
+        ]
+      }
+    },
+    "rightWrist",
+    {
+      "confidence": 1,
+      "jointName": "rightWrist",
+      "location": {
+        "cgPoint": [
+          0.7,
+          0.5
+        ]
+      }
+    },
+    "root",
+    {
+      "confidence": 1,
+      "jointName": "root",
+      "location": {
+        "cgPoint": [
+          0.5,
+          0.5
+        ]
+      }
+    }
+  ],
+  "leftHand": null,
+  "observation": {
+    "confidence": 1,
+    "requestDescriptor": {
+      "detectHumanBodyPoseRequest": {
+        "_0": {
+          "revision2": {}
+        }
+      }
+    },
+    "timeRange": {
+      "end": {},
+      "start": {}
+    },
+    "uuid": "00000000-0000-0000-0000-000000000001"
+  },
+  "rightHand": null
+}
